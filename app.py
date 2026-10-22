@@ -25,6 +25,44 @@ def get_resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 
+def configure_devmode(devmode, width_mm, height_mm, quality, paper_type):
+    portrait_width = min(width_mm, height_mm)
+    portrait_height = max(width_mm, height_mm)
+    devmode.Fields |= (
+        win32con.DM_PAPERSIZE
+        | win32con.DM_PAPERWIDTH
+        | win32con.DM_PAPERLENGTH
+        | win32con.DM_ORIENTATION
+    )
+    devmode.PaperSize = {
+        (148, 210): win32con.DMPAPER_A5,
+        (210, 297): win32con.DMPAPER_A4,
+        (297, 420): win32con.DMPAPER_A3,
+    }.get((round(portrait_width), round(portrait_height)), win32con.DMPAPER_USER)
+    devmode.PaperWidth = round(portrait_width * 10)
+    devmode.PaperLength = round(portrait_height * 10)
+    devmode.Orientation = (
+        win32con.DMORIENT_LANDSCAPE
+        if width_mm > height_mm
+        else win32con.DMORIENT_PORTRAIT
+    )
+
+    devmode.Fields |= win32con.DM_PRINTQUALITY
+    devmode.PrintQuality = {
+        "high": win32con.DMRES_HIGH,
+        "standard": win32con.DMRES_MEDIUM,
+        "draft": win32con.DMRES_DRAFT,
+    }.get(quality, win32con.DMRES_HIGH)
+
+    if hasattr(devmode, "MediaType"):
+        devmode.Fields |= win32con.DM_MEDIATYPE
+        devmode.MediaType = {
+            "glossy": win32con.DMMEDIA_GLOSSY,
+            "matte": win32con.DMMEDIA_STANDARD,
+            "plain": win32con.DMMEDIA_STANDARD,
+        }.get(paper_type, win32con.DMMEDIA_GLOSSY)
+
+
 class PrintSignals(QObject):
     finished = pyqtSignal(str)
 
@@ -60,43 +98,13 @@ def print_image(payload):
         if devmode is None:
             raise RuntimeError("Драйвер принтера не предоставил параметры DEVMODE.")
 
-        portrait_width = min(width_mm, height_mm)
-        portrait_height = max(width_mm, height_mm)
-        devmode.dmFields |= (
-            win32con.DM_PAPERSIZE
-            | win32con.DM_PAPERWIDTH
-            | win32con.DM_PAPERLENGTH
-            | win32con.DM_ORIENTATION
+        configure_devmode(
+            devmode,
+            width_mm,
+            height_mm,
+            payload.get("quality", "high"),
+            payload.get("paper_type", "glossy"),
         )
-        devmode.dmPaperSize = {
-            (148, 210): win32con.DMPAPER_A5,
-            (210, 297): win32con.DMPAPER_A4,
-            (297, 420): win32con.DMPAPER_A3,
-        }.get((round(portrait_width), round(portrait_height)), win32con.DMPAPER_USER)
-        devmode.dmPaperWidth = round(portrait_width * 10)
-        devmode.dmPaperLength = round(portrait_height * 10)
-        devmode.dmOrientation = (
-            win32con.DMORIENT_LANDSCAPE
-            if width_mm > height_mm
-            else win32con.DMORIENT_PORTRAIT
-        )
-
-        quality = payload.get("quality", "high")
-        devmode.dmFields |= win32con.DM_PRINTQUALITY
-        devmode.dmPrintQuality = {
-            "high": win32con.DMRES_HIGH,
-            "standard": win32con.DMRES_MEDIUM,
-            "draft": win32con.DMRES_DRAFT,
-        }.get(quality, win32con.DMRES_HIGH)
-
-        paper_type = payload.get("paper_type", "glossy")
-        if hasattr(devmode, "dmMediaType"):
-            devmode.dmFields |= win32con.DM_MEDIATYPE
-            devmode.dmMediaType = {
-                "glossy": win32con.DMMEDIA_GLOSSY,
-                "matte": win32con.DMMEDIA_STANDARD,
-                "plain": win32con.DMMEDIA_STANDARD,
-            }.get(paper_type, win32con.DMMEDIA_GLOSSY)
 
         device_context = win32gui.CreateDC("WINSPOOL", printer_name, None, devmode)
         dpi_x = win32gui.GetDeviceCaps(device_context, win32con.LOGPIXELSX)
