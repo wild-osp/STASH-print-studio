@@ -1,0 +1,963 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>STASH Print Studio</title>
+  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #121216;
+      color: #e5e5eb;
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* Боковая панель очереди */
+    #queue-panel {
+      width: 150px;
+      background: #181820;
+      border-right: 1px solid #272733;
+      display: flex;
+      flex-direction: column;
+      padding: 10px;
+      gap: 8px;
+    }
+    #queue-list {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .thumb-item {
+      width: 100%;
+      height: 95px;
+      border-radius: 6px;
+      background: #23232f;
+      border: 2px solid transparent;
+      overflow: hidden;
+      cursor: pointer;
+      position: relative;
+    }
+    .thumb-item.active { border-color: #6366f1; }
+    .thumb-item img { width: 100%; height: 100%; object-fit: cover; }
+    .thumb-badge {
+      position: absolute; top: 4px; left: 4px;
+      background: #10b981; color: #fff;
+      font-size: 11px; font-weight: bold;
+      width: 20px; height: 20px; border-radius: 50%;
+      display: none; align-items: center; justify-content: center;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+    }
+    .thumb-item.ready .thumb-badge { display: flex; }
+    .thumb-del {
+      position: absolute; top: 4px; right: 4px;
+      background: rgba(0,0,0,0.65); color: #fff;
+      border-radius: 50%; width: 18px; height: 18px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; cursor: pointer;
+    }
+    .thumb-del:hover { background: #ef4444; }
+
+    /* Панель настроек */
+    #sidebar {
+      width: 340px;
+      background: #1c1c24;
+      border-right: 1px solid #2a2a38;
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      overflow-y: auto;
+      z-index: 10;
+    }
+    .brand-title {
+      font-size: 17px;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+      color: #6366f1;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 2px;
+    }
+    .brand-title span { color: #fff; }
+    .control-group { display: flex; flex-direction: column; gap: 4px; }
+    label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #8e8ea6; display: flex; justify-content: space-between; }
+    
+    select, input[type="range"], button {
+      background: #272735; border: 1px solid #3b3b4f; color: #fff; padding: 7px 10px; border-radius: 6px; font-size: 13px; outline: none;
+    }
+    select:focus, button:focus { border-color: #6366f1; }
+    button { cursor: pointer; font-weight: 600; background: #4f46e5; border: none; transition: 0.2s; }
+    button:hover { background: #6366f1; }
+    .btn-secondary { background: #2f2f40; color: #c8c8d6; border: 1px solid #434359; padding: 6px; font-size: 12px; }
+    .btn-secondary:hover { background: #3b3b50; color: #fff; }
+    .btn-success { background: #10b981; }
+    .btn-success:hover { background: #059669; }
+    .btn-warn { background: #f59e0b; color: #000; }
+    .btn-warn:hover { background: #d97706; }
+    
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .row-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+
+    /* Табы режимов */
+    .mode-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; background: #131318; padding: 3px; border-radius: 7px; }
+    .mode-tab { padding: 7px; font-size: 12px; border-radius: 5px; border: none; background: transparent; color: #888; }
+    .mode-tab.active { background: #4f46e5; color: #fff; }
+
+    /* Рабочая область просмотра */
+    #workspace {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      background: #0d0d10;
+      overflow: hidden;
+      cursor: grab;
+    }
+    #workspace:active { cursor: grabbing; }
+
+    #preview-canvas {
+      box-shadow: 0 10px 45px rgba(0,0,0,0.85);
+      border-radius: 4px;
+    }
+
+    #hud-info {
+      position: absolute;
+      bottom: 12px;
+      background: rgba(18, 18, 24, 0.9);
+      border: 1px solid rgba(255,255,255,0.1);
+      padding: 5px 14px;
+      border-radius: 20px;
+      font-size: 11px;
+      color: #999;
+      pointer-events: none;
+    }
+    
+    .val-badge { font-weight: 700; color: #6366f1; }
+    .doc-group { display: none; }
+    body.mode-doc-active .doc-group { display: flex; }
+    body.mode-doc-active .photo-group { display: none; }
+  </style>
+</head>
+<body>
+
+  <!-- Очередь файлов -->
+  <div id="queue-panel">
+    <button class="btn-secondary" id="btn-add-files">+ Загрузить</button>
+    <input type="file" id="file-input" multiple accept="image/*" style="display: none;">
+    <div id="queue-list"></div>
+    <button class="btn-secondary" id="btn-clear-queue">Очистить</button>
+  </div>
+
+  <!-- Настройки параметров -->
+  <div id="sidebar">
+    <div class="brand-title">STASH <span>Print Studio</span></div>
+
+    <!-- Переключатель режима: Обычное фото / Документы -->
+    <div class="mode-tabs">
+      <button class="mode-tab active" id="tab-mode-photo">Фотопечать</button>
+      <button class="mode-tab" id="tab-mode-doc">Фото на паспорт</button>
+    </div>
+
+    <!-- Режим Документов -->
+    <div class="control-group doc-group">
+      <label>Тип документа</label>
+      <select id="doc-type-select">
+        <option value="35x45">Паспорт / Шенген / РФ (35 × 45 мм)</option>
+        <option value="30x40">30 × 40 мм (Студенческий, удостоверения)</option>
+        <option value="50x50">Виза США / Green Card (50 × 50 мм / 2×2")</option>
+        <option value="90x120">Личное дело (90 × 120 мм)</option>
+      </select>
+    </div>
+
+    <div class="control-group doc-group">
+      <label>Раскладка на лист</label>
+      <select id="doc-sheet-select">
+        <option value="100x150">Лист 10 × 15 см (Блок 4-6 шт)</option>
+        <option value="210x297">Лист A4 (Многоместная сетка)</option>
+      </select>
+    </div>
+
+    <div class="control-group doc-group">
+      <label><input type="checkbox" id="check-face-guide" checked style="vertical-align: middle;"> Биометрическая разметка лица</label>
+    </div>
+
+    <!-- Режим обычного фото -->
+    <div class="control-group photo-group">
+      <label>Формат бумаги</label>
+      <select id="format-select">
+        <option value="100x150">10 × 15 см (4×6")</option>
+        <option value="130x180">13 × 18 см (5×7")</option>
+        <option value="150x200">15 × 20 см</option>
+        <option value="210x297">A4 (210 × 297 мм)</option>
+        <option value="148x210">A5 (148 × 210 мм)</option>
+        <option value="297x420">A3 (297 × 420 мм)</option>
+      </select>
+    </div>
+
+    <div class="control-group photo-group">
+      <label>Ориентация листа</label>
+      <div class="row">
+        <button class="btn-secondary" id="btn-portrait">Книжная</button>
+        <button class="btn-secondary" id="btn-landscape">Альбомная</button>
+      </div>
+    </div>
+
+    <div class="control-group photo-group">
+      <label>Поля листа</label>
+      <select id="border-select">
+        <option value="false">Без полей (В край листа)</option>
+        <option value="true">С полями (Белая рамка 4 мм)</option>
+      </select>
+    </div>
+
+    <!-- Масштабирование (Зум) слайдером -->
+    <div class="control-group">
+      <label>Масштаб кадра: <span class="val-badge" id="zoom-val">100%</span></label>
+      <input type="range" id="zoom-range" min="30" max="400" value="100">
+    </div>
+
+    <!-- Поворот и отзеркаливание -->
+    <div class="control-group">
+      <label>Поворот и отражение</label>
+      <div class="row-3">
+        <button class="btn-secondary" id="btn-rot-left">↺ 90°</button>
+        <button class="btn-secondary" id="btn-rot-right">↻ 90°</button>
+        <button class="btn-secondary" id="btn-flip">⇄ Зеркало</button>
+      </div>
+    </div>
+
+    <!-- Цветокоррекция с процентами -->
+    <div class="control-group">
+      <label>Яркость: <span class="val-badge" id="brightness-val">100%</span></label>
+      <input type="range" id="brightness-range" min="70" max="150" value="100">
+      <label style="margin-top: 4px;">Контраст: <span class="val-badge" id="contrast-val">100%</span></label>
+      <input type="range" id="contrast-range" min="70" max="150" value="100">
+      <button class="btn-secondary" id="btn-reset-color" style="margin-top: 4px;">Сбросить цвет в 100%</button>
+    </div>
+
+    <!-- Готовность -->
+    <button class="btn-secondary btn-warn" id="btn-toggle-ready">✓ Пометить как готово</button>
+
+    <!-- Выбор оборудования Windows -->
+    <div class="control-group" style="margin-top: 4px;">
+      <label>Принтер Windows</label>
+      <select id="printer-select"><option>Поиск принтеров...</option></select>
+    </div>
+
+    <div class="control-group">
+      <label>Тип бумаги</label>
+      <select id="paper-type">
+        <option value="glossy">Глянцевая (Photo Glossy)</option>
+        <option value="matte">Матовая (Matte)</option>
+        <option value="plain">Обычная бумага (Plain)</option>
+      </select>
+    </div>
+
+    <div class="control-group">
+      <label>Качество печати</label>
+      <select id="print-quality">
+        <option value="high">Наилучшее качество (High / Photo)</option>
+        <option value="standard">Стандартное (Standard)</option>
+        <option value="draft">Черновое (Draft / Быстро)</option>
+      </select>
+    </div>
+
+    <!-- Кнопки печати -->
+    <button class="btn-success" id="btn-print-current" style="padding: 10px; font-size: 13px; margin-top: 4px;">
+      Печать текущего фото
+    </button>
+    <button class="btn-secondary" id="btn-print-all" style="padding: 9px; font-size: 12px;">
+      Печать всех готовых (✓)
+    </button>
+  </div>
+
+  <!-- Рабочее пространство -->
+  <div id="workspace">
+    <canvas id="preview-canvas"></canvas>
+    <div id="hud-info">Тяните мышью для центровки • Колесико / ползунок: Зум • Затемненная зона будет отрезана</div>
+  </div>
+
+  <script>
+    let pyBridge = null;
+
+    // Режим работы: 'photo' или 'doc'
+    let currentMode = 'photo';
+
+    // Очередь файлов: каждый элемент хранит свои персональные настройки
+    let queue = [];
+    let activeIndex = -1;
+
+    let docType = '35x45';
+    let docSheet = '100x150';
+    let showFaceGuide = true;
+
+    const canvas = document.getElementById('preview-canvas');
+    const ctx = canvas.getContext('2d');
+
+    let isDragging = false;
+    let startX = 0, startY = 0;
+
+    // --- СВЯЗЬ С WINDOWS PYTHON ---
+    new QWebChannel(qt.webChannelTransport, function(channel) {
+      pyBridge = channel.objects.pyBridge;
+      pyBridge.get_printers().then(function(res) {
+        const data = JSON.parse(res);
+        const sel = document.getElementById('printer-select');
+        sel.innerHTML = '';
+        data.printers.forEach(p => {
+          let opt = document.createElement('option');
+          opt.value = p;
+          opt.textContent = p;
+          if (p === data.default) opt.selected = true;
+          sel.appendChild(opt);
+        });
+      });
+    });
+
+    // Ресайз хоста
+    function resizeCanvas() {
+      const ws = document.getElementById('workspace');
+      canvas.width = ws.clientWidth - 30;
+      canvas.height = ws.clientHeight - 30;
+      render();
+    }
+    window.addEventListener('resize', resizeCanvas);
+
+    // --- ПЕРЕКЛЮЧЕНИЕ РЕЖИМОВ (ФОТО / ДОКУМЕНТЫ) ---
+    document.getElementById('tab-mode-photo').onclick = () => {
+      currentMode = 'photo';
+      document.body.classList.remove('mode-doc-active');
+      document.getElementById('tab-mode-photo').classList.add('active');
+      document.getElementById('tab-mode-doc').classList.remove('active');
+      render();
+    };
+
+    document.getElementById('tab-mode-doc').onclick = () => {
+      currentMode = 'doc';
+      document.body.classList.add('mode-doc-active');
+      document.getElementById('tab-mode-doc').classList.add('active');
+      document.getElementById('tab-mode-photo').classList.remove('active');
+      render();
+    };
+
+    // --- ОТРИСОВКА (RENDER) ---
+    function render() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#0d0d10";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const activeItem = queue[activeIndex];
+      if (!activeItem || !activeItem.img.complete) {
+        ctx.fillStyle = "#555";
+        ctx.font = "14px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("Перетащите фотографии сюда или нажмите «+ Загрузить»", canvas.width / 2, canvas.height / 2);
+        return;
+      }
+
+      if (currentMode === 'photo') {
+        renderPhotoPreview(activeItem);
+      } else {
+        renderDocPreview(activeItem);
+      }
+    }
+
+    // Рендер обычной фотопечати (с затемнением непечатной области)
+    function renderPhotoPreview(item) {
+      const s = item.state;
+      let wMm = s.isLandscape ? s.sheetHeightMm : s.sheetWidthMm;
+      let hMm = s.isLandscape ? s.sheetWidthMm : s.sheetHeightMm;
+
+      const maxSheetW = canvas.width * 0.75;
+      const maxSheetH = canvas.height * 0.75;
+      const pxPerMm = Math.min(maxSheetW / wMm, maxSheetH / hMm);
+
+      const sheetW = wMm * pxPerMm;
+      const sheetH = hMm * pxPerMm;
+      const sheetX = (canvas.width - sheetW) / 2;
+      const sheetY = (canvas.height - sheetH) / 2;
+
+      ctx.save();
+
+      // 1. Рисуем изображение
+      ctx.save();
+      ctx.filter = `brightness(${s.brightness}%) contrast(${s.contrast}%)`;
+      ctx.translate(sheetX + sheetW / 2 + s.x, sheetY + sheetH / 2 + s.y);
+      ctx.rotate((s.rotation * Math.PI) / 180);
+      if (s.flipped) ctx.scale(-1, 1);
+      ctx.scale(s.scale, s.scale);
+      ctx.drawImage(item.img, -item.img.width / 2, -item.img.height / 2);
+      ctx.restore();
+
+      // 2. Затемнение области вне листа
+      ctx.save();
+      ctx.fillStyle = "rgba(10, 10, 14, 0.80)";
+      ctx.beginPath();
+      ctx.rect(0, 0, canvas.width, canvas.height);
+      ctx.rect(sheetX, sheetY, sheetW, sheetH);
+      ctx.fill("evenodd");
+      ctx.restore();
+
+      // 3. Рамка (булево: с полями 4 мм или без)
+      if (s.hasBorder) {
+        const bPx = 4 * pxPerMm;
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(sheetX, sheetY, sheetW, bPx);
+        ctx.fillRect(sheetX, sheetY + sheetH - bPx, sheetW, bPx);
+        ctx.fillRect(sheetX, sheetY, bPx, sheetH);
+        ctx.fillRect(sheetX + sheetW - bPx, sheetY, bPx, sheetH);
+      }
+
+      // Граница листа и сетка третей
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.7)";
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(sheetX, sheetY, sheetW, sheetH);
+
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(sheetX + sheetW / 3, sheetY);
+      ctx.lineTo(sheetX + sheetW / 3, sheetY + sheetH);
+      ctx.moveTo(sheetX + (sheetW * 2) / 3, sheetY);
+      ctx.lineTo(sheetX + (sheetW * 2) / 3, sheetY + sheetH);
+      ctx.moveTo(sheetX, sheetY + sheetH / 3);
+      ctx.lineTo(sheetX + sheetW, sheetY + sheetH / 3);
+      ctx.moveTo(sheetX, sheetY + (sheetH * 2) / 3);
+      ctx.lineTo(sheetX + sheetW, sheetY + (sheetH * 2) / 3);
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    // Рендер кадрирования документа с биометрической разметкой лица
+    function renderDocPreview(item) {
+      const s = item.state;
+      const docSizes = {
+        '35x45': { w: 35, h: 45 },
+        '30x40': { w: 30, h: 40 },
+        '50x50': { w: 50, h: 50 },
+        '90x120': { w: 90, h: 120 }
+      };
+      const curDoc = docSizes[docType] || { w: 35, h: 45 };
+
+      // Одиночный блок фото на документы по центру для центровки
+      const pxPerMm = Math.min((canvas.width * 0.5) / curDoc.w, (canvas.height * 0.7) / curDoc.h);
+      const docW = curDoc.w * pxPerMm;
+      const docH = curDoc.h * pxPerMm;
+      const docX = (canvas.width - docW) / 2;
+      const docY = (canvas.height - docH) / 2;
+
+      ctx.save();
+
+      // Фото
+      ctx.save();
+      ctx.filter = `brightness(${s.brightness}%) contrast(${s.contrast}%)`;
+      ctx.translate(docX + docW / 2 + s.x, docY + docH / 2 + s.y);
+      ctx.rotate((s.rotation * Math.PI) / 180);
+      if (s.flipped) ctx.scale(-1, 1);
+      ctx.scale(s.scale, s.scale);
+      ctx.drawImage(item.img, -item.img.width / 2, -item.img.height / 2);
+      ctx.restore();
+
+      // Затемнение
+      ctx.save();
+      ctx.fillStyle = "rgba(10, 10, 14, 0.85)";
+      ctx.beginPath();
+      ctx.rect(0, 0, canvas.width, canvas.height);
+      ctx.rect(docX, docY, docW, docH);
+      ctx.fill("evenodd");
+      ctx.restore();
+
+      // Рамка документа
+      ctx.strokeStyle = "#6366f1";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(docX, docY, docW, docH);
+
+      // Биометрическая разметка лица (Овал лица, линия глаз, линия подбородка)
+      if (showFaceGuide) {
+        ctx.save();
+        ctx.strokeStyle = "rgba(16, 185, 129, 0.85)"; // изумрудный
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 4]);
+
+        const centerX = docX + docW / 2;
+        // Овал головы (занимает ~70-80% высоты)
+        const headH = docH * 0.72;
+        const headW = docW * 0.54;
+        const headCenterY = docY + docH * 0.45;
+
+        ctx.beginPath();
+        ctx.ellipse(centerX, headCenterY, headW / 2, headH / 2, 0, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Линия уровня глаз
+        const eyesY = docY + docH * 0.42;
+        ctx.strokeStyle = "rgba(245, 158, 11, 0.8)";
+        ctx.beginPath();
+        ctx.moveTo(docX + docW * 0.2, eyesY);
+        ctx.lineTo(docX + docW * 0.8, eyesY);
+        ctx.stroke();
+
+        // Линия макушки и подбородка
+        ctx.strokeStyle = "rgba(239, 68, 68, 0.7)";
+        ctx.beginPath();
+        // Макушка
+        ctx.moveTo(docX + docW * 0.3, headCenterY - headH / 2);
+        ctx.lineTo(docX + docW * 0.7, headCenterY - headH / 2);
+        // Подбородок
+        ctx.moveTo(docX + docW * 0.3, headCenterY + headH / 2);
+        ctx.lineTo(docX + docW * 0.7, headCenterY + headH / 2);
+        ctx.stroke();
+
+        ctx.restore();
+      }
+
+      ctx.restore();
+    }
+
+    // --- ПЕРЕМЕЩЕНИЕ И ЗУМ КАДРА ---
+    canvas.addEventListener('mousedown', (e) => {
+      if (activeIndex === -1) return;
+      isDragging = true;
+      startX = e.clientX - queue[activeIndex].state.x;
+      startY = e.clientY - queue[activeIndex].state.y;
+    });
+
+    window.addEventListener('mousemove', (e) => {
+      if (!isDragging || activeIndex === -1) return;
+      queue[activeIndex].state.x = e.clientX - startX;
+      queue[activeIndex].state.y = e.clientY - startY;
+      render();
+    });
+
+    window.addEventListener('mouseup', () => isDragging = false);
+
+    // Зум колесиком
+    canvas.addEventListener('wheel', (e) => {
+      if (activeIndex === -1) return;
+      e.preventDefault();
+      const zoomMul = e.deltaY < 0 ? 1.05 : 0.95;
+      setZoom(queue[activeIndex].state.scale * zoomMul);
+    }, { passive: false });
+
+    // Слайдер зума
+    document.getElementById('zoom-range').oninput = (e) => {
+      if (activeIndex === -1) return;
+      const baseScale = queue[activeIndex].state.baseFitScale || 1.0;
+      const factor = e.target.value / 100;
+      queue[activeIndex].state.scale = baseScale * factor;
+      document.getElementById('zoom-val').textContent = e.target.value + '%';
+      render();
+    };
+
+    function setZoom(newScale) {
+      const s = queue[activeIndex].state;
+      s.scale = Math.max(0.05, Math.min(newScale, 15.0));
+      const baseScale = s.baseFitScale || 1.0;
+      const pct = Math.round((s.scale / baseScale) * 100);
+      document.getElementById('zoom-range').value = pct;
+      document.getElementById('zoom-val').textContent = pct + '%';
+      render();
+    }
+
+    // --- РАБОТА С ОЧЕРЕДЬЮ ФОТО ---
+    function addFiles(files) {
+      for (let f of files) {
+        if (!f.type.startsWith('image/')) continue;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const img = new Image();
+          img.onload = () => {
+            queue.push({
+              file: f,
+              src: e.target.result,
+              img: img,
+              isReady: false,
+              state: {
+                x: 0, y: 0, scale: 1.0, baseFitScale: 1.0,
+                rotation: 0, flipped: false,
+                brightness: 100, contrast: 100,
+                sheetWidthMm: 100, sheetHeightMm: 150,
+                isLandscape: false, hasBorder: false
+              }
+            });
+            if (queue.length === 1) selectPhoto(0);
+            updateQueueUI();
+          };
+          img.src = e.target.result;
+        };
+        reader.readAsDataURL(f);
+      }
+    }
+
+    function selectPhoto(idx) {
+      if (idx < 0 || idx >= queue.length) return;
+      activeIndex = idx;
+      syncUIWithItemState(queue[activeIndex]);
+      updateQueueUI();
+      render();
+    }
+
+    // Синхронизация контролов боковой панели с выбранным фото
+    function syncUIWithItemState(item) {
+      const s = item.state;
+      document.getElementById('format-select').value = `${s.sheetWidthMm}x${s.sheetHeightMm}`;
+      document.getElementById('border-select').value = s.hasBorder ? 'true' : 'false';
+      document.getElementById('brightness-range').value = s.brightness;
+      document.getElementById('contrast-range').value = s.contrast;
+      document.getElementById('brightness-val').textContent = s.brightness + '%';
+      document.getElementById('contrast-val').textContent = s.contrast + '%';
+
+      // Вычисляем базовую подгонку (fit), если еще не задана
+      if (!s.baseFitScale) {
+        calculateBaseFit(item);
+      }
+      const pct = Math.round((s.scale / s.baseFitScale) * 100);
+      document.getElementById('zoom-range').value = pct;
+      document.getElementById('zoom-val').textContent = pct + '%';
+
+      updateReadyButtonUI(item.isReady);
+    }
+
+    function calculateBaseFit(item) {
+      const s = item.state;
+      let wMm = s.isLandscape ? s.sheetHeightMm : s.sheetWidthMm;
+      let hMm = s.isLandscape ? s.sheetWidthMm : s.sheetHeightMm;
+      const pxPerMm = Math.min((canvas.width * 0.75) / wMm, (canvas.height * 0.75) / hMm);
+      const sheetW = wMm * pxPerMm;
+      const sheetH = hMm * pxPerMm;
+      const isRot = (s.rotation % 180 !== 0);
+      const imgW = isRot ? item.img.height : item.img.width;
+      const imgH = isRot ? item.img.width : item.img.height;
+      s.baseFitScale = Math.max(sheetW / imgW, sheetH / imgH);
+      s.scale = s.baseFitScale;
+    }
+
+    function updateQueueUI() {
+      const qList = document.getElementById('queue-list');
+      qList.innerHTML = '';
+      queue.forEach((item, idx) => {
+        const div = document.createElement('div');
+        div.className = `thumb-item ${idx === activeIndex ? 'active' : ''} ${item.isReady ? 'ready' : ''}`;
+        div.innerHTML = `
+          <img src="${item.src}">
+          <div class="thumb-badge">✓</div>
+          <div class="thumb-del" onclick="event.stopPropagation(); removePhoto(${idx})">×</div>
+        `;
+        div.onclick = () => selectPhoto(idx);
+        qList.appendChild(div);
+      });
+    }
+
+    window.removePhoto = function(idx) {
+      queue.splice(idx, 1);
+      if (activeIndex >= queue.length) activeIndex = queue.length - 1;
+      if (activeIndex >= 0) syncUIWithItemState(queue[activeIndex]);
+      updateQueueUI();
+      render();
+    };
+
+    document.getElementById('btn-add-files').onclick = () => document.getElementById('file-input').click();
+    document.getElementById('file-input').onchange = (e) => addFiles(e.target.files);
+    document.getElementById('btn-clear-queue').onclick = () => {
+      queue = [];
+      activeIndex = -1;
+      updateQueueUI();
+      render();
+    };
+
+    // Drag-and-drop
+    window.addEventListener('dragover', (e) => e.preventDefault());
+    window.addEventListener('drop', (e) => {
+      e.preventDefault();
+      if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+    });
+
+    // --- КНОПКА ГОТОВНОСТИ (ГАЛОЧКА) ---
+    function updateReadyButtonUI(isReady) {
+      const btn = document.getElementById('btn-toggle-ready');
+      if (isReady) {
+        btn.textContent = '✓ Готово к печати';
+        btn.style.background = '#10b981';
+      } else {
+        btn.textContent = 'Пометить как готово';
+        btn.style.background = '#3b3b50';
+      }
+    }
+
+    document.getElementById('btn-toggle-ready').onclick = () => {
+      if (activeIndex === -1) return;
+      queue[activeIndex].isReady = !queue[activeIndex].isReady;
+      updateReadyButtonUI(queue[activeIndex].isReady);
+      updateQueueUI();
+    };
+
+    // --- ЭЛЕМЕНТЫ УПРАВЛЕНИЯ ПАНЕЛИ ---
+    document.getElementById('format-select').onchange = (e) => {
+      if (activeIndex === -1) return;
+      const p = e.target.value.split('x');
+      const s = queue[activeIndex].state;
+      s.sheetWidthMm = parseInt(p[0]);
+      s.sheetHeightMm = parseInt(p[1]);
+      calculateBaseFit(queue[activeIndex]);
+      syncUIWithItemState(queue[activeIndex]);
+      render();
+    };
+
+    document.getElementById('border-select').onchange = (e) => {
+      if (activeIndex === -1) return;
+      queue[activeIndex].state.hasBorder = (e.target.value === 'true');
+      render();
+    };
+
+    document.getElementById('btn-portrait').onclick = () => {
+      if (activeIndex === -1) return;
+      queue[activeIndex].state.isLandscape = false;
+      calculateBaseFit(queue[activeIndex]);
+      render();
+    };
+
+    document.getElementById('btn-landscape').onclick = () => {
+      if (activeIndex === -1) return;
+      queue[activeIndex].state.isLandscape = true;
+      calculateBaseFit(queue[activeIndex]);
+      render();
+    };
+
+    document.getElementById('btn-rot-left').onclick = () => {
+      if (activeIndex === -1) return;
+      queue[activeIndex].state.rotation = (queue[activeIndex].state.rotation - 90 + 360) % 360;
+      render();
+    };
+
+    document.getElementById('btn-rot-right').onclick = () => {
+      if (activeIndex === -1) return;
+      queue[activeIndex].state.rotation = (queue[activeIndex].state.rotation + 90) % 360;
+      render();
+    };
+
+    document.getElementById('btn-flip').onclick = () => {
+      if (activeIndex === -1) return;
+      queue[activeIndex].state.flipped = !queue[activeIndex].state.flipped;
+      render();
+    };
+
+    // Цветокоррекция
+    document.getElementById('brightness-range').oninput = (e) => {
+      if (activeIndex === -1) return;
+      queue[activeIndex].state.brightness = e.target.value;
+      document.getElementById('brightness-val').textContent = e.target.value + '%';
+      render();
+    };
+
+    document.getElementById('contrast-range').oninput = (e) => {
+      if (activeIndex === -1) return;
+      queue[activeIndex].state.contrast = e.target.value;
+      document.getElementById('contrast-val').textContent = e.target.value + '%';
+      render();
+    };
+
+    document.getElementById('btn-reset-color').onclick = () => {
+      if (activeIndex === -1) return;
+      queue[activeIndex].state.brightness = 100;
+      queue[activeIndex].state.contrast = 100;
+      document.getElementById('brightness-range').value = 100;
+      document.getElementById('contrast-range').value = 100;
+      document.getElementById('brightness-val').textContent = '100%';
+      document.getElementById('contrast-val').textContent = '100%';
+      render();
+    };
+
+    // Документные контролы
+    document.getElementById('doc-type-select').onchange = (e) => { docType = e.target.value; render(); };
+    document.getElementById('doc-sheet-select').onchange = (e) => { docSheet = e.target.value; render(); };
+    document.getElementById('check-face-guide').onchange = (e) => { showFaceGuide = e.target.checked; render(); };
+
+    // --- ГЕНЕРАЦИЯ 300 DPI БИТМАПА ---
+    function generateHighResPayload(item) {
+      const DPI_FACTOR = 300 / 25.4; // 11.811 точек/мм
+
+      if (currentMode === 'photo') {
+        const s = item.state;
+        let wMm = s.isLandscape ? s.sheetHeightMm : s.sheetWidthMm;
+        let hMm = s.isLandscape ? s.sheetWidthMm : s.sheetHeightMm;
+
+        const finalW = Math.round(wMm * DPI_FACTOR);
+        const finalH = Math.round(hMm * DPI_FACTOR);
+
+        const outCanvas = document.createElement('canvas');
+        outCanvas.width = finalW;
+        outCanvas.height = finalH;
+        const oCtx = outCanvas.getContext('2d');
+
+        oCtx.fillStyle = "#ffffff";
+        oCtx.fillRect(0, 0, finalW, finalH);
+
+        const borderPx = s.hasBorder ? Math.round(4 * DPI_FACTOR) : 0;
+        const vpW = finalW - borderPx * 2;
+        const vpH = finalH - borderPx * 2;
+
+        oCtx.save();
+        oCtx.beginPath();
+        oCtx.rect(borderPx, borderPx, vpW, vpH);
+        oCtx.clip();
+
+        const pxPerMm = Math.min((canvas.width * 0.75) / wMm, (canvas.height * 0.75) / hMm);
+        const screenSheetW = wMm * pxPerMm;
+        const multiplier = finalW / screenSheetW;
+
+        oCtx.filter = `brightness(${s.brightness}%) contrast(${s.contrast}%)`;
+        oCtx.translate(finalW / 2 + s.x * multiplier, finalH / 2 + s.y * multiplier);
+        oCtx.rotate((s.rotation * Math.PI) / 180);
+        if (s.flipped) oCtx.scale(-1, 1);
+        oCtx.scale(s.scale * multiplier, s.scale * multiplier);
+        oCtx.drawImage(item.img, -item.img.width / 2, -item.img.height / 2);
+        oCtx.restore();
+
+        return {
+          printer: document.getElementById('printer-select').value,
+          width_mm: wMm,
+          height_mm: hMm,
+          paper_type: document.getElementById('paper-type').value,
+          quality: document.getElementById('print-quality').value,
+          image_base64: outCanvas.toDataURL('image/jpeg', 0.98)
+        };
+      } else {
+        // РЕЖИМ ДОКУМЕНТОВ: Компоновка нескольких фото на лист с метками реза
+        const sheetParts = docSheet.split('x');
+        const sheetWMm = parseInt(sheetParts[0]);
+        const sheetHMm = parseInt(sheetParts[1]);
+
+        const finalW = Math.round(sheetWMm * DPI_FACTOR);
+        const finalH = Math.round(sheetHMm * DPI_FACTOR);
+
+        const outCanvas = document.createElement('canvas');
+        outCanvas.width = finalW;
+        outCanvas.height = finalH;
+        const oCtx = outCanvas.getContext('2d');
+
+        oCtx.fillStyle = "#ffffff";
+        oCtx.fillRect(0, 0, finalW, finalH);
+
+        const docSizes = { '35x45': { w: 35, h: 45 }, '30x40': { w: 30, h: 40 }, '50x50': { w: 50, h: 50 }, '90x120': { w: 90, h: 120 } };
+        const d = docSizes[docType] || { w: 35, h: 45 };
+
+        // Сначала генерируем 1 идеальное кадрированное фото документа
+        const singleW = Math.round(d.w * DPI_FACTOR);
+        const singleH = Math.round(d.h * DPI_FACTOR);
+        const singleCanvas = document.createElement('canvas');
+        singleCanvas.width = singleW;
+        singleCanvas.height = singleH;
+        const sCtx = singleCanvas.getContext('2d');
+
+        const docPxPerMm = Math.min((canvas.width * 0.5) / d.w, (canvas.height * 0.7) / d.h);
+        const docScreenW = d.w * docPxPerMm;
+        const multiplier = singleW / docScreenW;
+
+        const s = item.state;
+        sCtx.fillStyle = "#ffffff";
+        sCtx.fillRect(0, 0, singleW, singleH);
+        sCtx.filter = `brightness(${s.brightness}%) contrast(${s.contrast}%)`;
+        sCtx.translate(singleW / 2 + s.x * multiplier, singleH / 2 + s.y * multiplier);
+        sCtx.rotate((s.rotation * Math.PI) / 180);
+        if (s.flipped) sCtx.scale(-1, 1);
+        sCtx.scale(s.scale * multiplier, s.scale * multiplier);
+        sCtx.drawImage(item.img, -item.img.width / 2, -item.img.height / 2);
+
+        // Компоновка на лист: определяем количество рядов и колонок
+        let cols = Math.floor((sheetWMm - 10) / (d.w + 2));
+        let rows = Math.floor((sheetHMm - 10) / (d.h + 2));
+        if (sheetWMm === 100 && sheetHMm === 150 && docType === '35x45') {
+          cols = 2; rows = 2; // стандартный блок 4 шт на 10x15
+        }
+
+        const gapPx = Math.round(2 * DPI_FACTOR);
+        const blockW = cols * singleW + (cols - 1) * gapPx;
+        const blockH = rows * singleH + (rows - 1) * gapPx;
+        const startX = Math.round((finalW - blockW) / 2);
+        const startY = Math.round((finalH - blockH) / 2);
+
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            const x = startX + c * (singleW + gapPx);
+            const y = startY + r * (singleH + gapPx);
+            oCtx.drawImage(singleCanvas, x, y);
+
+            // Тонкие крестики/метки для нарезки
+            oCtx.strokeStyle = "#cccccc";
+            oCtx.lineWidth = 1;
+            oCtx.strokeRect(x, y, singleW, singleH);
+          }
+        }
+
+        return {
+          printer: document.getElementById('printer-select').value,
+          width_mm: sheetWMm,
+          height_mm: sheetHMm,
+          paper_type: document.getElementById('paper-type').value,
+          quality: document.getElementById('print-quality').value,
+          image_base64: outCanvas.toDataURL('image/jpeg', 0.98)
+        };
+      }
+    }
+
+    // --- ПЕЧАТЬ ТЕКУЩЕГО ФОТО ---
+    document.getElementById('btn-print-current').onclick = () => {
+      if (activeIndex === -1 || !queue[activeIndex]) {
+        alert("Выберите фото для печати!");
+        return;
+      }
+      const btn = document.getElementById('btn-print-current');
+      btn.textContent = "Печать отправлена...";
+      btn.disabled = true;
+
+      const payload = generateHighResPayload(queue[activeIndex]);
+      pyBridge.send_to_printer(JSON.stringify(payload)).then((res) => {
+        const result = JSON.parse(res);
+        if (result.status === 'success') {
+          queue[activeIndex].isReady = true;
+          updateReadyButtonUI(true);
+          updateQueueUI();
+        } else {
+          alert("Ошибка печати: " + result.message);
+        }
+        btn.textContent = "Печать текущего фото";
+        btn.disabled = false;
+      });
+    };
+
+    // --- ПАКЕТНАЯ ПЕЧАТЬ ВСЕХ ГОТОВЫХ (✓) ---
+    document.getElementById('btn-print-all').onclick = async () => {
+      const readyItems = queue.filter(item => item.isReady);
+      if (readyItems.length === 0) {
+        alert("Нет готовых фото! Пометьте нужные фотографии кнопкой «✓ Пометить как готово».");
+        return;
+      }
+
+      if (!confirm(`Отправить на печать ${readyItems.length} готовых фото?`)) return;
+
+      const btn = document.getElementById('btn-print-all');
+      btn.disabled = true;
+
+      for (let i = 0; i < readyItems.length; i++) {
+        btn.textContent = `Печать: ${i + 1} из ${readyItems.length}...`;
+        const payload = generateHighResPayload(readyItems[i]);
+        await pyBridge.send_to_printer(JSON.stringify(payload));
+      }
+
+      btn.textContent = "Печать всех готовых (✓)";
+      btn.disabled = false;
+      alert("Все готовые фото успешно отправлены в очередь печати Windows!");
+    };
+
+    setTimeout(resizeCanvas, 100);
+  </script>
+</body>
+</html>
