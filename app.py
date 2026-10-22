@@ -106,15 +106,23 @@ def print_image(payload):
             payload.get("paper_type", "glossy"),
         )
 
-        device_context = win32gui.CreateDC("WINSPOOL", printer_name, None, devmode)
-        dpi_x = win32gui.GetDeviceCaps(device_context, win32con.LOGPIXELSX)
-        dpi_y = win32gui.GetDeviceCaps(device_context, win32con.LOGPIXELSY)
+        device_context = win32gui.CreateDC("WINSPOOL", printer_name, None)
+        device_context = win32gui.ResetDC(device_context, devmode)
+        if not device_context:
+            raise RuntimeError("Драйвер принтера не применил параметры DEVMODE.")
+
+        gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+        get_device_caps = gdi32.GetDeviceCaps
+        get_device_caps.argtypes = [ctypes.wintypes.HDC, ctypes.c_int]
+        get_device_caps.restype = ctypes.c_int
+        dpi_x = get_device_caps(device_context, win32con.LOGPIXELSX)
+        dpi_y = get_device_caps(device_context, win32con.LOGPIXELSY)
         if dpi_x <= 0 or dpi_y <= 0:
             raise RuntimeError("Драйвер принтера сообщил недопустимое разрешение печати.")
         destination_width = round(width_mm * dpi_x / 25.4)
         destination_height = round(height_mm * dpi_y / 25.4)
-        offset_x = win32gui.GetDeviceCaps(device_context, win32con.PHYSICALOFFSETX)
-        offset_y = win32gui.GetDeviceCaps(device_context, win32con.PHYSICALOFFSETY)
+        offset_x = get_device_caps(device_context, win32con.PHYSICALOFFSETX)
+        offset_y = get_device_caps(device_context, win32con.PHYSICALOFFSETY)
 
         class DocInfo(ctypes.Structure):
             _fields_ = [
@@ -146,7 +154,6 @@ def print_image(payload):
                 ("bmiColors", ctypes.wintypes.DWORD * 3),
             ]
 
-        gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
         start_doc = gdi32.StartDocW
         start_doc.argtypes = [ctypes.wintypes.HDC, ctypes.POINTER(DocInfo)]
         start_doc.restype = ctypes.wintypes.INT
