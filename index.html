@@ -17,7 +17,8 @@
 
     /* Боковая панель очереди */
     #queue-panel {
-      width: 150px;
+      order: 1;
+      flex: 0 0 150px;
       background: #181820;
       border-right: 1px solid #272733;
       display: flex;
@@ -64,9 +65,10 @@
 
     /* Панель настроек */
     #sidebar {
-      width: 340px;
+      order: 3;
+      flex: 0 0 340px;
       background: #1c1c24;
-      border-right: 1px solid #2a2a38;
+      border-left: 1px solid #2a2a38;
       padding: 14px 16px;
       display: flex;
       flex-direction: column;
@@ -111,6 +113,7 @@
 
     /* Рабочая область просмотра */
     #workspace {
+      order: 2;
       flex: 1;
       display: flex;
       align-items: center;
@@ -297,6 +300,7 @@
     let docType = '35x45';
     let docSheet = '100x150';
     let showFaceGuide = true;
+    const pendingPrints = new Map();
 
     const canvas = document.getElementById('preview-canvas');
     const ctx = canvas.getContext('2d');
@@ -307,10 +311,32 @@
     // --- СВЯЗЬ С WINDOWS PYTHON ---
     new QWebChannel(qt.webChannelTransport, function(channel) {
       pyBridge = channel.objects.pyBridge;
+      pyBridge.print_finished.connect((resultJson) => {
+        let result;
+        try {
+          result = JSON.parse(resultJson);
+        } catch (error) {
+          alert('Получен некорректный ответ подсистемы печати.');
+          return;
+        }
+        const pending = pendingPrints.get(result.request_id);
+        if (!pending) return;
+        pendingPrints.delete(result.request_id);
+        if (result.status === 'success') {
+          pending.resolve(result);
+        } else {
+          pending.reject(new Error(result.message || 'Не удалось отправить задание на печать.'));
+        }
+      });
       pyBridge.get_printers().then(function(res) {
         const data = JSON.parse(res);
         const sel = document.getElementById('printer-select');
         sel.innerHTML = '';
+        if (data.error) {
+          sel.add(new Option('Ошибка получения списка принтеров', ''));
+          alert('Не удалось получить список принтеров: ' + data.error);
+          return;
+        }
         data.printers.forEach(p => {
           let opt = document.createElement('option');
           opt.value = p;
@@ -318,6 +344,9 @@
           if (p === data.default) opt.selected = true;
           sel.appendChild(opt);
         });
+        if (!data.printers.length) {
+          sel.add(new Option('Принтеры не найдены', ''));
+        }
       });
     });
 
@@ -326,6 +355,14 @@
       const ws = document.getElementById('workspace');
       canvas.width = ws.clientWidth - 30;
       canvas.height = ws.clientHeight - 30;
+      if (activeIndex >= 0 && queue[activeIndex].state.baseFitScale) {
+        const state = queue[activeIndex].state;
+        const zoomFactor = state.scale / state.baseFitScale;
+        calculateBaseFit(queue[activeIndex]);
+        state.scale *= zoomFactor;
+      } else if (activeIndex >= 0) {
+        calculateBaseFit(queue[activeIndex]);
+      }
       render();
     }
     window.addEventListener('resize', resizeCanvas);
@@ -333,17 +370,21 @@
     // --- ПЕРЕКЛЮЧЕНИЕ РЕЖИМОВ (ФОТО / ДОКУМЕНТЫ) ---
     document.getElementById('tab-mode-photo').onclick = () => {
       currentMode = 'photo';
+      if (activeIndex >= 0) queue[activeIndex].state.mode = currentMode;
       document.body.classList.remove('mode-doc-active');
       document.getElementById('tab-mode-photo').classList.add('active');
       document.getElementById('tab-mode-doc').classList.remove('active');
+      if (activeIndex >= 0) calculateBaseFit(queue[activeIndex]);
       render();
     };
 
     document.getElementById('tab-mode-doc').onclick = () => {
       currentMode = 'doc';
+      if (activeIndex >= 0) queue[activeIndex].state.mode = currentMode;
       document.body.classList.add('mode-doc-active');
       document.getElementById('tab-mode-doc').classList.add('active');
       document.getElementById('tab-mode-photo').classList.remove('active');
+      if (activeIndex >= 0) calculateBaseFit(queue[activeIndex]);
       render();
     };
 
@@ -447,78 +488,90 @@
       };
       const curDoc = docSizes[docType] || { w: 35, h: 45 };
 
-      // Одиночный блок фото на документы по центру для центровки
-      const pxPerMm = Math.min((canvas.width * 0.5) / curDoc.w, (canvas.height * 0.7) / curDoc.h);
+      const [sheetWidthMm, sheetHeightMm] = docSheet.split('x').map(Number);
+      const pxPerMm = Math.min((canvas.width * 0.75) / sheetWidthMm, (canvas.height * 0.75) / sheetHeightMm);
+      const sheetW = sheetWidthMm * pxPerMm;
+      const sheetH = sheetHeightMm * pxPerMm;
+      const sheetX = (canvas.width - sheetW) / 2;
+      const sheetY = (canvas.height - sheetH) / 2;
+      let cols = Math.max(1, Math.floor((sheetWidthMm - 10) / (curDoc.w + 2)));
+      let rows = Math.max(1, Math.floor((sheetHeightMm - 10) / (curDoc.h + 2)));
+      if (docSheet === '100x150' && docType === '35x45') {
+        cols = 2;
+        rows = 2;
+      }
+      const gapMm = 2;
+      const blockW = cols * curDoc.w + (cols - 1) * gapMm;
+      const blockH = rows * curDoc.h + (rows - 1) * gapMm;
+      const startX = sheetX + (sheetWidthMm - blockW) * pxPerMm / 2;
+      const startY = sheetY + (sheetHeightMm - blockH) * pxPerMm / 2;
       const docW = curDoc.w * pxPerMm;
       const docH = curDoc.h * pxPerMm;
-      const docX = (canvas.width - docW) / 2;
-      const docY = (canvas.height - docH) / 2;
 
       ctx.save();
-
-      // Фото
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(sheetX, sheetY, sheetW, sheetH);
       ctx.save();
+      ctx.beginPath();
+      ctx.rect(sheetX, sheetY, sheetW, sheetH);
+      ctx.clip();
       ctx.filter = `brightness(${s.brightness}%) contrast(${s.contrast}%)`;
-      ctx.translate(docX + docW / 2 + s.x, docY + docH / 2 + s.y);
-      ctx.rotate((s.rotation * Math.PI) / 180);
-      if (s.flipped) ctx.scale(-1, 1);
-      ctx.scale(s.scale, s.scale);
-      ctx.drawImage(item.img, -item.img.width / 2, -item.img.height / 2);
-      ctx.restore();
+      for (let row = 0; row < rows; row++) {
+        for (let col = 0; col < cols; col++) {
+          const docX = startX + col * (docW + gapMm * pxPerMm);
+          const docY = startY + row * (docH + gapMm * pxPerMm);
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(docX, docY, docW, docH);
+          ctx.clip();
+          ctx.translate(docX + docW / 2 + s.x, docY + docH / 2 + s.y);
+          ctx.rotate((s.rotation * Math.PI) / 180);
+          if (s.flipped) ctx.scale(-1, 1);
+          ctx.scale(s.scale, s.scale);
+          ctx.drawImage(item.img, -item.img.width / 2, -item.img.height / 2);
+          ctx.restore();
+          ctx.strokeStyle = '#6366f1';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(docX, docY, docW, docH);
 
-      // Затемнение
+          if (showFaceGuide) {
+            const centerX = docX + docW / 2;
+            const headH = docH * 0.72;
+            const headCenterY = docY + docH * 0.45;
+            ctx.save();
+            ctx.setLineDash([4, 4]);
+            ctx.lineWidth = 1;
+            ctx.strokeStyle = 'rgba(16, 185, 129, 0.85)';
+            ctx.beginPath();
+            ctx.ellipse(centerX, headCenterY, docW * 0.27, headH / 2, 0, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.strokeStyle = 'rgba(245, 158, 11, 0.8)';
+            ctx.beginPath();
+            ctx.moveTo(docX + docW * 0.2, docY + docH * 0.42);
+            ctx.lineTo(docX + docW * 0.8, docY + docH * 0.42);
+            ctx.stroke();
+            ctx.strokeStyle = 'rgba(239, 68, 68, 0.7)';
+            ctx.beginPath();
+            ctx.moveTo(docX + docW * 0.3, headCenterY - headH / 2);
+            ctx.lineTo(docX + docW * 0.7, headCenterY - headH / 2);
+            ctx.moveTo(docX + docW * 0.3, headCenterY + headH / 2);
+            ctx.lineTo(docX + docW * 0.7, headCenterY + headH / 2);
+            ctx.stroke();
+            ctx.restore();
+          }
+        }
+      }
+      ctx.restore();
       ctx.save();
-      ctx.fillStyle = "rgba(10, 10, 14, 0.85)";
+      ctx.fillStyle = 'rgba(10, 10, 14, 0.8)';
       ctx.beginPath();
       ctx.rect(0, 0, canvas.width, canvas.height);
-      ctx.rect(docX, docY, docW, docH);
-      ctx.fill("evenodd");
+      ctx.rect(sheetX, sheetY, sheetW, sheetH);
+      ctx.fill('evenodd');
       ctx.restore();
-
-      // Рамка документа
-      ctx.strokeStyle = "#6366f1";
-      ctx.lineWidth = 2;
-      ctx.strokeRect(docX, docY, docW, docH);
-
-      // Биометрическая разметка лица (Овал лица, линия глаз, линия подбородка)
-      if (showFaceGuide) {
-        ctx.save();
-        ctx.strokeStyle = "rgba(16, 185, 129, 0.85)"; // изумрудный
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([4, 4]);
-
-        const centerX = docX + docW / 2;
-        // Овал головы (занимает ~70-80% высоты)
-        const headH = docH * 0.72;
-        const headW = docW * 0.54;
-        const headCenterY = docY + docH * 0.45;
-
-        ctx.beginPath();
-        ctx.ellipse(centerX, headCenterY, headW / 2, headH / 2, 0, 0, Math.PI * 2);
-        ctx.stroke();
-
-        // Линия уровня глаз
-        const eyesY = docY + docH * 0.42;
-        ctx.strokeStyle = "rgba(245, 158, 11, 0.8)";
-        ctx.beginPath();
-        ctx.moveTo(docX + docW * 0.2, eyesY);
-        ctx.lineTo(docX + docW * 0.8, eyesY);
-        ctx.stroke();
-
-        // Линия макушки и подбородка
-        ctx.strokeStyle = "rgba(239, 68, 68, 0.7)";
-        ctx.beginPath();
-        // Макушка
-        ctx.moveTo(docX + docW * 0.3, headCenterY - headH / 2);
-        ctx.lineTo(docX + docW * 0.7, headCenterY - headH / 2);
-        // Подбородок
-        ctx.moveTo(docX + docW * 0.3, headCenterY + headH / 2);
-        ctx.lineTo(docX + docW * 0.7, headCenterY + headH / 2);
-        ctx.stroke();
-
-        ctx.restore();
-      }
-
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(sheetX, sheetY, sheetW, sheetH);
       ctx.restore();
     }
 
@@ -530,7 +583,7 @@
       startY = e.clientY - queue[activeIndex].state.y;
     });
 
-    window.addEventListener('mousemove', (e) => {
+    canvas.addEventListener('mousemove', (e) => {
       if (!isDragging || activeIndex === -1) return;
       queue[activeIndex].state.x = e.clientX - startX;
       queue[activeIndex].state.y = e.clientY - startY;
@@ -538,6 +591,7 @@
     });
 
     window.addEventListener('mouseup', () => isDragging = false);
+    canvas.addEventListener('mouseleave', () => isDragging = false);
 
     // Зум колесиком
     canvas.addEventListener('wheel', (e) => {
@@ -585,7 +639,9 @@
                 rotation: 0, flipped: false,
                 brightness: 100, contrast: 100,
                 sheetWidthMm: 100, sheetHeightMm: 150,
-                isLandscape: false, hasBorder: false
+                isLandscape: false, hasBorder: false,
+                mode: 'photo', docType: '35x45',
+                docSheet: '100x150', showFaceGuide: true
               }
             });
             if (queue.length === 1) selectPhoto(0);
@@ -600,7 +656,18 @@
     function selectPhoto(idx) {
       if (idx < 0 || idx >= queue.length) return;
       activeIndex = idx;
-      syncUIWithItemState(queue[activeIndex]);
+      const item = queue[activeIndex];
+      currentMode = item.state.mode;
+      docType = item.state.docType;
+      docSheet = item.state.docSheet;
+      showFaceGuide = item.state.showFaceGuide;
+      document.body.classList.toggle('mode-doc-active', currentMode === 'doc');
+      document.getElementById('tab-mode-photo').classList.toggle('active', currentMode === 'photo');
+      document.getElementById('tab-mode-doc').classList.toggle('active', currentMode === 'doc');
+      document.getElementById('doc-type-select').value = docType;
+      document.getElementById('doc-sheet-select').value = docSheet;
+      document.getElementById('check-face-guide').checked = showFaceGuide;
+      syncUIWithItemState(item);
       updateQueueUI();
       render();
     }
@@ -628,6 +695,26 @@
 
     function calculateBaseFit(item) {
       const s = item.state;
+      if (currentMode === 'doc') {
+        const docSizes = {
+          '35x45': { w: 35, h: 45 },
+          '30x40': { w: 30, h: 40 },
+          '50x50': { w: 50, h: 50 },
+          '90x120': { w: 90, h: 120 }
+        };
+        const doc = docSizes[s.docType] || docSizes['35x45'];
+        const sheet = s.docSheet.split('x').map(Number);
+        const screenPxPerMm = Math.min((canvas.width * 0.75) / sheet[0], (canvas.height * 0.75) / sheet[1]);
+        const isRotated = s.rotation % 180 !== 0;
+        const imageWidth = isRotated ? item.img.height : item.img.width;
+        const imageHeight = isRotated ? item.img.width : item.img.height;
+        s.baseFitScale = Math.max(
+          (doc.w * screenPxPerMm) / imageWidth,
+          (doc.h * screenPxPerMm) / imageHeight
+        );
+        s.scale = s.baseFitScale;
+        return;
+      }
       let wMm = s.isLandscape ? s.sheetHeightMm : s.sheetWidthMm;
       let hMm = s.isLandscape ? s.sheetWidthMm : s.sheetHeightMm;
       const pxPerMm = Math.min((canvas.width * 0.75) / wMm, (canvas.height * 0.75) / hMm);
@@ -646,6 +733,7 @@
       queue.forEach((item, idx) => {
         const div = document.createElement('div');
         div.className = `thumb-item ${idx === activeIndex ? 'active' : ''} ${item.isReady ? 'ready' : ''}`;
+        div.title = item.file.name;
         div.innerHTML = `
           <img src="${item.src}">
           <div class="thumb-badge">✓</div>
@@ -658,8 +746,12 @@
 
     window.removePhoto = function(idx) {
       queue.splice(idx, 1);
-      if (activeIndex >= queue.length) activeIndex = queue.length - 1;
-      if (activeIndex >= 0) syncUIWithItemState(queue[activeIndex]);
+      if (idx < activeIndex) activeIndex--;
+      else if (idx === activeIndex) activeIndex = Math.min(idx, queue.length - 1);
+      if (activeIndex >= 0) selectPhoto(activeIndex);
+      if (activeIndex < 0) {
+        document.getElementById('btn-toggle-ready').textContent = '✓ Пометить как готово';
+      }
       updateQueueUI();
       render();
     };
@@ -669,6 +761,8 @@
     document.getElementById('btn-clear-queue').onclick = () => {
       queue = [];
       activeIndex = -1;
+      document.getElementById('btn-toggle-ready').textContent = '✓ Пометить как готово';
+      document.getElementById('btn-toggle-ready').style.background = '';
       updateQueueUI();
       render();
     };
@@ -776,16 +870,34 @@
     };
 
     // Документные контролы
-    document.getElementById('doc-type-select').onchange = (e) => { docType = e.target.value; render(); };
-    document.getElementById('doc-sheet-select').onchange = (e) => { docSheet = e.target.value; render(); };
-    document.getElementById('check-face-guide').onchange = (e) => { showFaceGuide = e.target.checked; render(); };
+    document.getElementById('doc-type-select').onchange = (e) => {
+      docType = e.target.value;
+      if (activeIndex >= 0) {
+        queue[activeIndex].state.docType = docType;
+        calculateBaseFit(queue[activeIndex]);
+      }
+      render();
+    };
+    document.getElementById('doc-sheet-select').onchange = (e) => {
+      docSheet = e.target.value;
+      if (activeIndex >= 0) {
+        queue[activeIndex].state.docSheet = docSheet;
+        calculateBaseFit(queue[activeIndex]);
+      }
+      render();
+    };
+    document.getElementById('check-face-guide').onchange = (e) => {
+      showFaceGuide = e.target.checked;
+      if (activeIndex >= 0) queue[activeIndex].state.showFaceGuide = showFaceGuide;
+      render();
+    };
 
     // --- ГЕНЕРАЦИЯ 300 DPI БИТМАПА ---
     function generateHighResPayload(item) {
-      const DPI_FACTOR = 300 / 25.4; // 11.811 точек/мм
+      const DPI_FACTOR = 300 / 25.4;
+      const s = item.state;
 
-      if (currentMode === 'photo') {
-        const s = item.state;
+      if (s.mode === 'photo') {
         let wMm = s.isLandscape ? s.sheetHeightMm : s.sheetWidthMm;
         let hMm = s.isLandscape ? s.sheetWidthMm : s.sheetHeightMm;
 
@@ -830,8 +942,7 @@
           image_base64: outCanvas.toDataURL('image/jpeg', 0.98)
         };
       } else {
-        // РЕЖИМ ДОКУМЕНТОВ: Компоновка нескольких фото на лист с метками реза
-        const sheetParts = docSheet.split('x');
+        const sheetParts = s.docSheet.split('x');
         const sheetWMm = parseInt(sheetParts[0]);
         const sheetHMm = parseInt(sheetParts[1]);
 
@@ -847,9 +958,8 @@
         oCtx.fillRect(0, 0, finalW, finalH);
 
         const docSizes = { '35x45': { w: 35, h: 45 }, '30x40': { w: 30, h: 40 }, '50x50': { w: 50, h: 50 }, '90x120': { w: 90, h: 120 } };
-        const d = docSizes[docType] || { w: 35, h: 45 };
+        const d = docSizes[s.docType] || { w: 35, h: 45 };
 
-        // Сначала генерируем 1 идеальное кадрированное фото документа
         const singleW = Math.round(d.w * DPI_FACTOR);
         const singleH = Math.round(d.h * DPI_FACTOR);
         const singleCanvas = document.createElement('canvas');
@@ -857,11 +967,9 @@
         singleCanvas.height = singleH;
         const sCtx = singleCanvas.getContext('2d');
 
-        const docPxPerMm = Math.min((canvas.width * 0.5) / d.w, (canvas.height * 0.7) / d.h);
-        const docScreenW = d.w * docPxPerMm;
-        const multiplier = singleW / docScreenW;
+        const screenPxPerMm = Math.min((canvas.width * 0.75) / sheetWMm, (canvas.height * 0.75) / sheetHMm);
+        const multiplier = finalW / (sheetWMm * screenPxPerMm);
 
-        const s = item.state;
         sCtx.fillStyle = "#ffffff";
         sCtx.fillRect(0, 0, singleW, singleH);
         sCtx.filter = `brightness(${s.brightness}%) contrast(${s.contrast}%)`;
@@ -871,11 +979,11 @@
         sCtx.scale(s.scale * multiplier, s.scale * multiplier);
         sCtx.drawImage(item.img, -item.img.width / 2, -item.img.height / 2);
 
-        // Компоновка на лист: определяем количество рядов и колонок
-        let cols = Math.floor((sheetWMm - 10) / (d.w + 2));
-        let rows = Math.floor((sheetHMm - 10) / (d.h + 2));
-        if (sheetWMm === 100 && sheetHMm === 150 && docType === '35x45') {
-          cols = 2; rows = 2; // стандартный блок 4 шт на 10x15
+        let cols = Math.max(1, Math.floor((sheetWMm - 10) / (d.w + 2)));
+        let rows = Math.max(1, Math.floor((sheetHMm - 10) / (d.h + 2)));
+        if (sheetWMm === 100 && sheetHMm === 150 && s.docType === '35x45') {
+          cols = 2;
+          rows = 2;
         }
 
         const gapPx = Math.round(2 * DPI_FACTOR);
@@ -890,7 +998,6 @@
             const y = startY + r * (singleH + gapPx);
             oCtx.drawImage(singleCanvas, x, y);
 
-            // Тонкие крестики/метки для нарезки
             oCtx.strokeStyle = "#cccccc";
             oCtx.lineWidth = 1;
             oCtx.strokeRect(x, y, singleW, singleH);
@@ -908,29 +1015,57 @@
       }
     }
 
+    let printRequestCounter = 0;
+    function sendPrintJob(payload) {
+      if (!pyBridge) return Promise.reject(new Error('Подключение к подсистеме печати не установлено.'));
+      payload.request_id = `${Date.now()}-${++printRequestCounter}`;
+      return new Promise((resolve, reject) => {
+        pendingPrints.set(payload.request_id, { resolve, reject });
+        pyBridge.send_to_printer(JSON.stringify(payload)).then((responseJson) => {
+          let response;
+          try {
+            response = JSON.parse(responseJson);
+          } catch (error) {
+            pendingPrints.delete(payload.request_id);
+            reject(new Error('Подсистема печати вернула некорректный ответ.'));
+            return;
+          }
+          if (response.status !== 'queued') {
+            pendingPrints.delete(payload.request_id);
+            reject(new Error(response.message || 'Не удалось добавить задание в очередь печати.'));
+          }
+        }).catch((error) => {
+          pendingPrints.delete(payload.request_id);
+          reject(error);
+        });
+      });
+    }
+
     // --- ПЕЧАТЬ ТЕКУЩЕГО ФОТО ---
-    document.getElementById('btn-print-current').onclick = () => {
+    document.getElementById('btn-print-current').onclick = async () => {
       if (activeIndex === -1 || !queue[activeIndex]) {
         alert("Выберите фото для печати!");
         return;
       }
+      if (!document.getElementById('printer-select').value) {
+        alert('Выберите установленный принтер Windows.');
+        return;
+      }
       const btn = document.getElementById('btn-print-current');
-      btn.textContent = "Печать отправлена...";
+      const item = queue[activeIndex];
+      btn.textContent = "Отправка на печать...";
       btn.disabled = true;
-
-      const payload = generateHighResPayload(queue[activeIndex]);
-      pyBridge.send_to_printer(JSON.stringify(payload)).then((res) => {
-        const result = JSON.parse(res);
-        if (result.status === 'success') {
-          queue[activeIndex].isReady = true;
-          updateReadyButtonUI(true);
-          updateQueueUI();
-        } else {
-          alert("Ошибка печати: " + result.message);
-        }
+      try {
+        await sendPrintJob(generateHighResPayload(item));
+        item.isReady = true;
+        if (queue[activeIndex] === item) updateReadyButtonUI(true);
+        updateQueueUI();
+      } catch (error) {
+        alert("Ошибка печати: " + error.message);
+      } finally {
         btn.textContent = "Печать текущего фото";
         btn.disabled = false;
-      });
+      }
     };
 
     // --- ПАКЕТНАЯ ПЕЧАТЬ ВСЕХ ГОТОВЫХ (✓) ---
@@ -945,16 +1080,18 @@
 
       const btn = document.getElementById('btn-print-all');
       btn.disabled = true;
-
-      for (let i = 0; i < readyItems.length; i++) {
-        btn.textContent = `Печать: ${i + 1} из ${readyItems.length}...`;
-        const payload = generateHighResPayload(readyItems[i]);
-        await pyBridge.send_to_printer(JSON.stringify(payload));
+      try {
+        for (let i = 0; i < readyItems.length; i++) {
+          btn.textContent = `Печать: ${i + 1} из ${readyItems.length}...`;
+          await sendPrintJob(generateHighResPayload(readyItems[i]));
+        }
+        alert("Все готовые фото успешно отправлены в очередь печати Windows!");
+      } catch (error) {
+        alert("Ошибка печати: " + error.message);
+      } finally {
+        btn.textContent = "Печать всех готовых (✓)";
+        btn.disabled = false;
       }
-
-      btn.textContent = "Печать всех готовых (✓)";
-      btn.disabled = false;
-      alert("Все готовые фото успешно отправлены в очередь печати Windows!");
     };
 
     setTimeout(resizeCanvas, 100);
