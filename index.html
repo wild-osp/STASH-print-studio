@@ -1041,6 +1041,13 @@
       });
     }
 
+    function getPaperFallbackMessage(result) {
+      if (!result.paper_fallback) return '';
+      const width = Number(result.paper_width_mm).toLocaleString('ru-RU', { maximumFractionDigits: 1 });
+      const height = Number(result.paper_height_mm).toLocaleString('ru-RU', { maximumFractionDigits: 1 });
+      return `Драйвер не поддерживает точный пользовательский формат. Выбран ближайший доступный размер бумаги: ${width} × ${height} мм.`;
+    }
+
     // --- ПЕЧАТЬ ТЕКУЩЕГО ФОТО ---
     document.getElementById('btn-print-current').onclick = async () => {
       if (activeIndex === -1 || !queue[activeIndex]) {
@@ -1056,10 +1063,12 @@
       btn.textContent = "Отправка на печать...";
       btn.disabled = true;
       try {
-        await sendPrintJob(generateHighResPayload(item));
+        const result = await sendPrintJob(generateHighResPayload(item));
         item.isReady = true;
         if (queue[activeIndex] === item) updateReadyButtonUI(true);
         updateQueueUI();
+        const paperMessage = getPaperFallbackMessage(result);
+        if (paperMessage) alert(paperMessage);
       } catch (error) {
         alert("Ошибка печати: " + error.message);
       } finally {
@@ -1080,12 +1089,17 @@
 
       const btn = document.getElementById('btn-print-all');
       btn.disabled = true;
+      const paperWarnings = new Set();
       try {
         for (let i = 0; i < readyItems.length; i++) {
           btn.textContent = `Печать: ${i + 1} из ${readyItems.length}...`;
-          await sendPrintJob(generateHighResPayload(readyItems[i]));
+          const result = await sendPrintJob(generateHighResPayload(readyItems[i]));
+          const paperMessage = getPaperFallbackMessage(result);
+          if (paperMessage) paperWarnings.add(paperMessage);
         }
-        alert("Все готовые фото успешно отправлены в очередь печати Windows!");
+        alert(paperWarnings.size
+          ? `Все готовые фото отправлены в очередь печати Windows.\n\n${[...paperWarnings].join('\n\n')}`
+          : "Все готовые фото успешно отправлены в очередь печати Windows!");
       } catch (error) {
         alert("Ошибка печати: " + error.message);
       } finally {

@@ -25,22 +25,26 @@ def get_resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 
-def configure_devmode(devmode, width_mm, height_mm, quality, paper_type):
+def configure_devmode(
+    devmode, width_mm, height_mm, quality, paper_type, paper_size_id=None
+):
     portrait_width = min(width_mm, height_mm)
     portrait_height = max(width_mm, height_mm)
-    devmode.Fields |= (
-        win32con.DM_PAPERSIZE
-        | win32con.DM_PAPERWIDTH
-        | win32con.DM_PAPERLENGTH
-        | win32con.DM_ORIENTATION
-    )
-    devmode.PaperSize = {
-        (148, 210): win32con.DMPAPER_A5,
-        (210, 297): win32con.DMPAPER_A4,
-        (297, 420): win32con.DMPAPER_A3,
-    }.get((round(portrait_width), round(portrait_height)), win32con.DMPAPER_USER)
-    devmode.PaperWidth = round(portrait_width * 10)
-    devmode.PaperLength = round(portrait_height * 10)
+    paper_fields = win32con.DM_PAPERSIZE | win32con.DM_ORIENTATION
+    if paper_size_id is None:
+        paper_fields |= win32con.DM_PAPERWIDTH | win32con.DM_PAPERLENGTH
+    else:
+        devmode.Fields &= ~(win32con.DM_PAPERWIDTH | win32con.DM_PAPERLENGTH)
+    devmode.Fields |= paper_fields
+    if paper_size_id is None:
+        paper_size_id = {
+            (148, 210): win32con.DMPAPER_A5,
+            (210, 297): win32con.DMPAPER_A4,
+            (297, 420): win32con.DMPAPER_A3,
+        }.get((round(portrait_width), round(portrait_height)), win32con.DMPAPER_USER)
+        devmode.PaperWidth = round(portrait_width * 10)
+        devmode.PaperLength = round(portrait_height * 10)
+    devmode.PaperSize = paper_size_id
     devmode.Orientation = (
         win32con.DMORIENT_LANDSCAPE
         if width_mm > height_mm
@@ -61,6 +65,43 @@ def configure_devmode(devmode, width_mm, height_mm, quality, paper_type):
             "matte": win32con.DMMEDIA_STANDARD,
             "plain": win32con.DMMEDIA_STANDARD,
         }.get(paper_type, win32con.DMMEDIA_GLOSSY)
+
+
+def find_supported_paper(printer_name, port_name, width_mm, height_mm):
+    paper_ids = win32print.DeviceCapabilities(
+        printer_name, port_name, win32con.DC_PAPERS, None
+    )
+    paper_sizes = win32print.DeviceCapabilities(
+        printer_name, port_name, win32con.DC_PAPERSIZE, None
+    )
+    paper_names = win32print.DeviceCapabilities(
+        printer_name, port_name, win32con.DC_PAPERNAMES, None
+    )
+    target_width, target_height = sorted((width_mm, height_mm))
+    candidates = []
+    for paper_id, size, name in zip(paper_ids, paper_sizes, paper_names):
+        paper_width = min(size["x"], size["y"]) / 10
+        paper_height = max(size["x"], size["y"]) / 10
+        if paper_width <= 0 or paper_height <= 0:
+            continue
+        width_error = abs(paper_width - target_width) / target_width
+        height_error = abs(paper_height - target_height) / target_height
+        candidates.append(
+            (
+                max(width_error, height_error),
+                width_error + height_error,
+                paper_id,
+                paper_width,
+                paper_height,
+                name.strip(),
+            )
+        )
+    if not candidates:
+        return None
+    nearest = min(candidates)
+    if nearest[0] > 0.03:
+        return None
+    return nearest[2:]
 
 
 class PrintSignals(QObject):
@@ -98,18 +139,15 @@ def print_image(payload):
         if devmode is None:
             raise RuntimeError("Драйвер принтера не предоставил параметры DEVMODE.")
 
-        configure_devmode(
-            devmode,
-            width_mm,
-            height_mm,
-            payload.get("quality", "high"),
-            payload.get("paper_type", "glossy"),
-        )
+        quality = payload.get("quality", "high")
+        paper_type = payload.get("paper_type", "glossy")
+        configure_devmode(devmode, width_mm, height_mm, quality, paper_type)
 
         device_context = win32gui.CreateDC("WINSPOOL", printer_name, None)
-        device_context = win32gui.ResetDC(device_context, devmode)
-        if not device_context:
+        reset_context = win32gui.ResetDC(device_context, devmode)
+        if not reset_context:
             raise RuntimeError("Драйвер принтера не применил параметры DEVMODE.")
+        device_context = reset_context
 
         gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
         get_device_caps = gdi32.GetDeviceCaps
@@ -119,8 +157,64 @@ def print_image(payload):
         dpi_y = get_device_caps(device_context, win32con.LOGPIXELSY)
         if dpi_x <= 0 or dpi_y <= 0:
             raise RuntimeError("Драйвер принтера сообщил недопустимое разрешение печати.")
-        destination_width = round(width_mm * dpi_x / 25.4)
-        destination_height = round(height_mm * dpi_y / 25.4)
+        page_width_px = get_device_caps(device_context, win32con.PHYSICALWIDTH)
+        page_height_px = get_device_caps(device_context, win32con.PHYSICALHEIGHT)
+        page_width_mm = page_width_px * 25.4 / dpi_x
+        page_height_mm = page_height_px * 25.4 / dpi_y
+        requested_page_size = sorted((width_mm, height_mm))
+        actual_page_size = sorted((page_width_mm, page_height_mm))
+        paper_form = None
+        page_size_error = max(
+            abs(actual_page_size[0] - requested_page_size[0]) / requested_page_size[0],
+            abs(actual_page_size[1] - requested_page_size[1]) / requested_page_size[1],
+        )
+        if page_size_error > 0.03:
+            paper_form = find_supported_paper(
+                printer_name,
+                printer_info.get("pPortName"),
+                width_mm,
+                height_mm,
+            )
+            if paper_form is None:
+                raise RuntimeError(
+                    f"Принтер «{printer_name}» не поддерживает формат "
+                    f"{width_mm:g} × {height_mm:g} мм и не предлагает совместимый "
+                    "фотоформат. Задание отменено, чтобы не печатать на A4."
+                )
+            paper_size_id, form_width_mm, form_height_mm, form_name = paper_form
+            fallback_devmode = win32print.GetPrinter(printer_handle, 2).get("pDevMode")
+            if fallback_devmode is None:
+                raise RuntimeError("Не удалось получить DEVMODE для выбранного формата бумаги.")
+            configure_devmode(
+                fallback_devmode,
+                width_mm,
+                height_mm,
+                quality,
+                paper_type,
+                paper_size_id=paper_size_id,
+            )
+            reset_context = win32gui.ResetDC(device_context, fallback_devmode)
+            if not reset_context:
+                raise RuntimeError(
+                    f"Не удалось выбрать поддерживаемый формат бумаги «{form_name}»."
+                )
+            device_context = reset_context
+            page_width_px = get_device_caps(device_context, win32con.PHYSICALWIDTH)
+            page_height_px = get_device_caps(device_context, win32con.PHYSICALHEIGHT)
+            page_width_mm = page_width_px * 25.4 / dpi_x
+            page_height_mm = page_height_px * 25.4 / dpi_y
+            actual_page_size = sorted((page_width_mm, page_height_mm))
+            expected_form_size = sorted((form_width_mm, form_height_mm))
+            if max(
+                abs(actual_page_size[0] - expected_form_size[0]) / expected_form_size[0],
+                abs(actual_page_size[1] - expected_form_size[1]) / expected_form_size[1],
+            ) > 0.01:
+                raise RuntimeError(
+                    f"Драйвер принтера не применил поддерживаемый формат «{form_name}». "
+                    "Задание отменено, чтобы избежать печати на A4."
+                )
+        destination_width = page_width_px
+        destination_height = page_height_px
         offset_x = get_device_caps(device_context, win32con.PHYSICALOFFSETX)
         offset_y = get_device_caps(device_context, win32con.PHYSICALOFFSETY)
 
@@ -240,6 +334,11 @@ def print_image(payload):
         if end_doc(device_context) <= 0:
             raise ctypes.WinError(ctypes.get_last_error(), "Не удалось завершить задание печати")
         document_started = False
+        return {
+            "paper_width_mm": page_width_mm,
+            "paper_height_mm": page_height_mm,
+            "paper_fallback": paper_form is not None,
+        }
     finally:
         if document_started and device_context:
             gdi32.AbortDoc(device_context)
@@ -258,8 +357,12 @@ class PrintTask(QRunnable):
     def run(self):
         request_id = self.payload.get("request_id")
         try:
-            print_image(self.payload)
-            result = {"status": "success", "request_id": request_id}
+            print_details = print_image(self.payload)
+            result = {
+                "status": "success",
+                "request_id": request_id,
+                **print_details,
+            }
         except Exception as error:
             logging.exception("Не удалось отправить задание на печать")
             result = {
