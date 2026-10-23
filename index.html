@@ -257,11 +257,11 @@
       Проверить настройки в драйвере...
     </button>
     <div id="driver-settings-status" style="font-size: 11px; color: #8e8ea6;">
-      Приложение попробует заполнить формат, качество и бумагу. Сверьте их в окне драйвера; «Без полей» включается там вручную.
+      Выберите принтер, чтобы загрузить доступные типы бумаги. Качество и «Без полей» проверьте и задайте в окне Epson.
     </div>
 
     <div class="control-group">
-      <label>Тип бумаги</label>
+      <label>Тип бумаги (из драйвера)</label>
       <select id="paper-type">
         <option value="glossy">Глянцевая (Photo Glossy)</option>
         <option value="matte">Матовая (Matte)</option>
@@ -270,7 +270,7 @@
     </div>
 
     <div class="control-group">
-      <label>Качество печати</label>
+      <label>Качество печати (проверьте в Epson)</label>
       <select id="print-quality">
         <option value="high">Наилучшее качество (High / Photo)</option>
         <option value="standard">Стандартное (Standard)</option>
@@ -368,6 +368,7 @@
           sel.add(new Option('Принтеры не найдены', ''));
         }
         updateDriverSettingsStatus();
+        refreshDriverMediaTypes();
       });
     });
 
@@ -1065,7 +1066,7 @@
     function updateDriverSettingsStatus() {
       const printerName = document.getElementById('printer-select').value;
       const settings = configuredPrinters.get(printerName);
-      let status = 'Приложение попробует заполнить формат, качество и бумагу. Сверьте их в окне драйвера; «Без полей» включается там вручную.';
+      let status = 'Формат и тип бумаги передаются драйверу. Качество и «Без полей» задайте и проверьте в окне Epson.';
       if (settings) {
         status = 'Настройки из подтверждённого окна драйвера сохранены для следующих заданий. Убедитесь, что Epson принял качество и тип бумаги.';
         if (settings.borderless === true) {
@@ -1080,6 +1081,77 @@
       const configured = Boolean(settings);
       document.getElementById('paper-type').disabled = configured;
       document.getElementById('print-quality').disabled = configured;
+    }
+
+    let mediaTypesRequest = 0;
+    async function refreshDriverMediaTypes() {
+      const printerName = document.getElementById('printer-select').value;
+      const select = document.getElementById('paper-type');
+      if (!printerName || !pyBridge) return;
+
+      const requestId = ++mediaTypesRequest;
+      const previousValue = select.value;
+      const previousName = select.selectedOptions.length
+        ? select.selectedOptions[0].text.toLowerCase()
+        : '';
+      select.disabled = true;
+      try {
+        const response = JSON.parse(await callBridgeMethod(
+          'get_printer_media_types',
+          printerName
+        ));
+        if (requestId !== mediaTypesRequest) return;
+        if (response.error) throw new Error(response.error);
+        if (!Array.isArray(response.media_types) || !response.media_types.length) {
+          throw new Error('Драйвер не сообщил поддерживаемые типы бумаги.');
+        }
+
+        select.replaceChildren(...response.media_types.map((media) => {
+          const option = document.createElement('option');
+          option.value = `driver:${media.id}`;
+          option.textContent = media.name;
+          return option;
+        }));
+
+        if ([...select.options].some((option) => option.value === previousValue)) {
+          select.value = previousValue;
+        } else {
+          const mediaPreferences = {
+            glossy: [
+              'photo paper glossy',
+              'epson glossy',
+              'epson premium glossy',
+              'epson ultra glossy',
+              'glossy',
+            ],
+            matte: ['epson matte', 'epson archival matte', 'archival matte', 'matte'],
+            plain: ['plain paper', 'простая бумага', 'plain'],
+          };
+          const previousCategory = mediaPreferences[previousValue]
+            ? previousValue
+            : previousName.includes('matte')
+              ? 'matte'
+              : previousName.includes('plain') || previousName.includes('простая')
+                ? 'plain'
+                : 'glossy';
+          const preferredCategory = mediaPreferences[previousCategory];
+          const preferred = preferredCategory
+            .map((term) => response.media_types.find((media) => (
+              media.name.toLowerCase().includes(term)
+            )))
+            .find(Boolean);
+          if (preferred) select.value = `driver:${preferred.id}`;
+        }
+      } catch (error) {
+        if (requestId === mediaTypesRequest) {
+          select.replaceChildren(new Option('Типы бумаги недоступны', ''));
+          alert(`Не удалось получить типы бумаги для «${printerName}»: ${error.message}`);
+        }
+      } finally {
+        if (requestId === mediaTypesRequest) {
+          select.disabled = Boolean(configuredPrinters.get(printerName));
+        }
+      }
     }
 
     function getDriverSettingsOptions() {
@@ -1112,7 +1184,10 @@
       };
     }
 
-    document.getElementById('printer-select').addEventListener('change', updateDriverSettingsStatus);
+    document.getElementById('printer-select').addEventListener('change', () => {
+      updateDriverSettingsStatus();
+      refreshDriverMediaTypes();
+    });
     document.getElementById('btn-printer-settings').onclick = async () => {
       const printerName = document.getElementById('printer-select').value;
       if (!printerName) {
@@ -1134,7 +1209,16 @@
           JSON.stringify(options)
         ));
         if (response.status === 'configured') {
-          configuredPrinters.set(printerName, options);
+          const confirmedOptions = { ...options };
+          if (Number.isInteger(response.media_type)) {
+            const confirmedMediaType = `driver:${response.media_type}`;
+            if ([...document.getElementById('paper-type').options]
+              .some((option) => option.value === confirmedMediaType)) {
+              document.getElementById('paper-type').value = confirmedMediaType;
+              confirmedOptions.paper_type = confirmedMediaType;
+            }
+          }
+          configuredPrinters.set(printerName, confirmedOptions);
           updateDriverSettingsStatus();
         } else if (response.status === 'error') {
           alert('Не удалось открыть настройки принтера: ' + response.message);

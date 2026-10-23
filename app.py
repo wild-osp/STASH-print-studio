@@ -177,7 +177,14 @@ def configure_paper_size(devmode, width_mm, height_mm, paper_size_id=None):
 
 
 def configure_devmode(
-    devmode, width_mm, height_mm, quality, paper_type, paper_size_id=None
+    devmode,
+    width_mm,
+    height_mm,
+    quality,
+    paper_type,
+    paper_size_id=None,
+    printer_name=None,
+    port_name=None,
 ):
     configure_paper_size(devmode, width_mm, height_mm, paper_size_id)
     devmode.Fields |= win32con.DM_PRINTQUALITY
@@ -189,11 +196,32 @@ def configure_devmode(
 
     if hasattr(devmode, "MediaType"):
         devmode.Fields |= win32con.DM_MEDIATYPE
-        devmode.MediaType = {
-            "glossy": win32con.DMMEDIA_GLOSSY,
-            "matte": win32con.DMMEDIA_STANDARD,
-            "plain": win32con.DMMEDIA_STANDARD,
-        }.get(paper_type, win32con.DMMEDIA_GLOSSY)
+        if printer_name and port_name:
+            media_type = resolve_driver_media_type(
+                printer_name, port_name, paper_type
+            )
+            if media_type is None:
+                if isinstance(paper_type, str) and paper_type.startswith("driver:"):
+                    raise ValueError(
+                        "Драйвер не сообщил поддерживаемые варианты типа бумаги."
+                    )
+                devmode.MediaType = {
+                    "glossy": win32con.DMMEDIA_GLOSSY,
+                    "matte": win32con.DMMEDIA_STANDARD,
+                    "plain": win32con.DMMEDIA_STANDARD,
+                }.get(paper_type, win32con.DMMEDIA_GLOSSY)
+            else:
+                devmode.MediaType = media_type
+        elif paper_type.startswith("driver:"):
+            raise ValueError(
+                "Нельзя применить тип бумаги без сведений о принтере."
+            )
+        else:
+            devmode.MediaType = {
+                "glossy": win32con.DMMEDIA_GLOSSY,
+                "matte": win32con.DMMEDIA_STANDARD,
+                "plain": win32con.DMMEDIA_STANDARD,
+            }.get(paper_type, win32con.DMMEDIA_GLOSSY)
 
 
 def find_supported_paper(
@@ -243,13 +271,30 @@ def find_supported_paper(
     return nearest[2:]
 
 
-def find_driver_media_type(printer_name, port_name, paper_type):
+def get_driver_media_types(printer_name, port_name):
     media_types = win32print.DeviceCapabilities(
         printer_name, port_name, win32con.DC_MEDIATYPES, None
     )
     media_names = win32print.DeviceCapabilities(
         printer_name, port_name, win32con.DC_MEDIATYPENAMES, None
     )
+    return [
+        {"id": media_type, "name": name.strip()}
+        for media_type, name in zip(media_types, media_names)
+        if name.strip()
+    ]
+
+
+def resolve_driver_media_type(printer_name, port_name, paper_type):
+    media_types = get_driver_media_types(printer_name, port_name)
+    if isinstance(paper_type, str) and paper_type.startswith("driver:"):
+        try:
+            requested_type = int(paper_type[len("driver:"):])
+        except ValueError as error:
+            raise ValueError("Выбран неизвестный тип бумаги.") from error
+        if any(media["id"] == requested_type for media in media_types):
+            return requested_type
+        raise ValueError("Выбранный тип бумаги не поддерживается этим драйвером.")
     preferred_names = {
         "glossy": (
             "photo paper glossy",
@@ -260,14 +305,10 @@ def find_driver_media_type(printer_name, port_name, paper_type):
         "matte": ("epson matte", "epson archival matte"),
         "plain": ("plain paper", "простая бумага"),
     }.get(paper_type, ())
-    named_media = [
-        (" ".join(name.casefold().split()), media_type)
-        for name, media_type in zip(media_names, media_types)
-    ]
     for preferred_name in preferred_names:
-        for media_name, media_type in named_media:
-            if media_name == preferred_name:
-                return media_type
+        for media in media_types:
+            if " ".join(media["name"].casefold().split()) == preferred_name:
+                return media["id"]
     return None
 
 
@@ -281,7 +322,10 @@ def prepare_driver_devmode(printer_name, port_name, devmode, options):
     if quality not in ("high", "standard", "draft"):
         raise ValueError("Выбрано неизвестное качество печати.")
     paper_type = options.get("paper_type", "glossy")
-    if paper_type not in ("glossy", "matte", "plain"):
+    if not isinstance(paper_type, str) or not (
+        paper_type in ("glossy", "matte", "plain")
+        or paper_type.startswith("driver:")
+    ):
         raise ValueError("Выбран неизвестный тип бумаги.")
 
     format_names = {
@@ -311,14 +355,21 @@ def prepare_driver_devmode(printer_name, port_name, devmode, options):
         "draft": win32con.DMRES_DRAFT,
     }[quality]
     if hasattr(devmode, "MediaType"):
-        media_type = find_driver_media_type(printer_name, port_name, paper_type)
+        media_type = resolve_driver_media_type(
+            printer_name, port_name, paper_type
+        )
         devmode.Fields |= win32con.DM_MEDIATYPE
         if media_type is None:
-            devmode.MediaType = {
+            if isinstance(paper_type, str) and paper_type.startswith("driver:"):
+                raise ValueError(
+                    "Драйвер не сообщил поддерживаемые варианты типа бумаги."
+                )
+            media_type = {
                 "glossy": win32con.DMMEDIA_GLOSSY,
                 "matte": win32con.DMMEDIA_STANDARD,
                 "plain": win32con.DMMEDIA_STANDARD,
-            }[paper_type]
+            }.get(paper_type, win32con.DMMEDIA_GLOSSY)
+            devmode.MediaType = media_type
         else:
             devmode.MediaType = media_type
 
@@ -400,7 +451,15 @@ def print_image(payload, selected_devmode=None):
         quality = payload.get("quality", "high")
         paper_type = payload.get("paper_type", "glossy")
         if selected_devmode is None:
-            configure_devmode(devmode, width_mm, height_mm, quality, paper_type)
+            configure_devmode(
+                devmode,
+                width_mm,
+                height_mm,
+                quality,
+                paper_type,
+                printer_name=printer_name,
+                port_name=printer_info.get("pPortName"),
+            )
 
         device_context = win32gui.CreateDC("WINSPOOL", printer_name, None)
         reset_context = win32gui.ResetDC(device_context, devmode)
@@ -465,6 +524,8 @@ def print_image(payload, selected_devmode=None):
                 quality,
                 paper_type,
                 paper_size_id=paper_size_id,
+                printer_name=printer_name,
+                port_name=printer_info.get("pPortName"),
             )
             reset_context = win32gui.ResetDC(device_context, fallback_devmode)
             if not reset_context:
@@ -672,7 +733,11 @@ class PrintBridge(QObject):
                 return json.dumps({"status": "cancelled"}, ensure_ascii=False)
             self._printer_devmodes[printer_name] = devmode
             return json.dumps(
-                {"status": "configured", "printer": printer_name},
+                {
+                    "status": "configured",
+                    "printer": printer_name,
+                    "media_type": getattr(devmode, "MediaType", None),
+                },
                 ensure_ascii=False,
             )
         except Exception as error:
@@ -681,6 +746,32 @@ class PrintBridge(QObject):
                 {"status": "error", "message": str(error)},
                 ensure_ascii=False,
             )
+
+    @pyqtSlot(str, result=str)
+    def get_printer_media_types(self, printer_name):
+        printer_handle = None
+        try:
+            printer_handle = win32print.OpenPrinter(printer_name)
+            printer_info = win32print.GetPrinter(printer_handle, 2)
+            media_types = get_driver_media_types(
+                printer_name, printer_info.get("pPortName")
+            )
+            if not media_types:
+                raise RuntimeError(
+                    "Драйвер принтера не сообщил поддерживаемые типы бумаги."
+                )
+            return json.dumps(
+                {"media_types": media_types}, ensure_ascii=False
+            )
+        except Exception as error:
+            logging.exception("Не удалось получить типы бумаги принтера")
+            return json.dumps(
+                {"error": str(error), "media_types": []},
+                ensure_ascii=False,
+            )
+        finally:
+            if printer_handle:
+                win32print.ClosePrinter(printer_handle)
 
     @pyqtSlot(result=str)
     def get_printers(self):
