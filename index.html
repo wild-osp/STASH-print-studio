@@ -130,18 +130,60 @@
       border-radius: 4px;
     }
 
-    #hud-info {
+    .workspace-zoom-control {
       position: absolute;
-      bottom: 12px;
-      background: rgba(18, 18, 24, 0.9);
-      border: 1px solid rgba(255,255,255,0.1);
-      padding: 5px 14px;
-      border-radius: 20px;
+      bottom: 8px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: min(460px, calc(100% - 16px));
+      display: grid;
+      grid-template-columns: auto minmax(25px, 1fr) 78px 28px;
+      align-items: center;
+      gap: 3px;
+      padding: 5px;
       font-size: 11px;
-      color: #999;
-      pointer-events: none;
+      border: 1px solid #3b3b4f;
+      border-radius: 8px;
+      background: rgba(28, 28, 36, 0.96);
+      z-index: 2;
     }
-    
+    .percent-control {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .percent-control input[type="number"] {
+      width: 62px;
+      padding: 5px;
+      text-align: right;
+      background: #272735;
+      border: 1px solid #3b3b4f;
+      border-radius: 6px;
+      color: #fff;
+      font-size: 13px;
+    }
+    #driver-settings-status:empty { display: none; }
+    .dimension-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+    .dimension-row input {
+      min-width: 0;
+      width: 100%;
+      background: #272735;
+      border: 1px solid #3b3b4f;
+      color: #fff;
+      padding: 7px 8px;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+    input[type="number"] { user-select: text; }
+    .custom-size { display: none; }
+    .custom-size.visible { display: flex; }
+    body.mode-doc-active .doc-group.custom-size:not(.visible) { display: none; }
+    body.mode-doc-active .doc-group.custom-size.visible { display: flex; }
+    .dimension-row input:invalid { border-color: #ef4444; }
     .val-badge { font-weight: 700; color: #6366f1; }
     .doc-group { display: none; }
     body.mode-doc-active .doc-group { display: flex; }
@@ -165,35 +207,60 @@
     <!-- Переключатель режима: Обычное фото / Документы -->
     <div class="mode-tabs">
       <button class="mode-tab active" id="tab-mode-photo">Фотопечать</button>
-      <button class="mode-tab" id="tab-mode-doc">Фото на паспорт</button>
+      <button class="mode-tab" id="tab-mode-doc">Фото на документы</button>
     </div>
 
     <!-- Режим Документов -->
     <div class="control-group doc-group">
       <label>Тип документа</label>
       <select id="doc-type-select">
-        <option value="35x45">Паспорт / Шенген / РФ (35 × 45 мм)</option>
-        <option value="30x40">30 × 40 мм (Студенческий, удостоверения)</option>
-        <option value="50x50">Виза США / Green Card (50 × 50 мм / 2×2")</option>
-        <option value="90x120">Личное дело (90 × 120 мм)</option>
+        <option value="35x45">35 × 45 мм — паспорт / виза</option>
+        <option value="30x40">30 × 40 мм — удостоверение</option>
+        <option value="33x48">33 × 48 мм — виза Китая</option>
+        <option value="35x35">35 × 35 мм</option>
+        <option value="40x50">40 × 50 мм</option>
+        <option value="40x60">40 × 60 мм</option>
+        <option value="45x45">45 × 45 мм</option>
+        <option value="50x50">50 × 50 мм</option>
+        <option value="50.8x50.8">50,8 × 50,8 мм — виза США</option>
+        <option value="50x70">50 × 70 мм — Канада</option>
+        <option value="90x120">90 × 120 мм — личное дело</option>
+        <option value="custom">Произвольный размер</option>
       </select>
+    </div>
+
+    <div class="control-group doc-group custom-size" id="doc-photo-size-controls">
+      <label>Размер фото, мм</label>
+      <div class="dimension-row">
+        <input id="doc-photo-width" type="number" min="1" max="2000" step="0.1" value="35" placeholder="Ширина" aria-label="Ширина фото" required>
+        <input id="doc-photo-height" type="number" min="1" max="2000" step="0.1" value="45" placeholder="Высота" aria-label="Высота фото" required>
+      </div>
     </div>
 
     <div class="control-group doc-group">
       <label>Раскладка на лист</label>
       <select id="doc-sheet-select">
-        <option value="100x150">Лист 10 × 15 см (Блок 4-6 шт)</option>
-        <option value="210x297">Лист A4 (Многоместная сетка)</option>
+        <option value="100x150">10 × 15 см</option>
+        <option value="210x297">A4</option>
+        <option value="custom">Произвольный размер</option>
       </select>
     </div>
 
+    <div class="control-group doc-group custom-size" id="doc-sheet-size-controls">
+      <label>Размер листа, мм</label>
+      <div class="dimension-row">
+        <input id="doc-sheet-width" type="number" min="1" max="2000" step="0.1" value="100" placeholder="Ширина" aria-label="Ширина листа" required>
+        <input id="doc-sheet-height" type="number" min="1" max="2000" step="0.1" value="150" placeholder="Высота" aria-label="Высота листа" required>
+      </div>
+    </div>
+
     <div class="control-group doc-group">
-      <label><input type="checkbox" id="check-face-guide" checked style="vertical-align: middle;"> Биометрическая разметка лица</label>
+      <label><input type="checkbox" id="check-face-guide" checked style="vertical-align: middle;"> Разметка лица</label>
     </div>
 
     <!-- Режим обычного фото -->
     <div class="control-group photo-group">
-      <label>Формат бумаги</label>
+      <label>Размер бумаги</label>
       <select id="format-select">
         <option value="100x150">10 × 15 см (4×6")</option>
         <option value="130x180">13 × 18 см (5×7")</option>
@@ -201,7 +268,16 @@
         <option value="210x297">A4 (210 × 297 мм)</option>
         <option value="148x210">A5 (148 × 210 мм)</option>
         <option value="297x420">A3 (297 × 420 мм)</option>
+        <option value="custom">Произвольный размер</option>
       </select>
+    </div>
+
+    <div class="control-group photo-group custom-size" id="paper-size-controls">
+      <label>Размер бумаги, мм</label>
+      <div class="dimension-row">
+        <input id="paper-width" type="number" min="1" max="2000" step="0.1" value="100" placeholder="Ширина" aria-label="Ширина бумаги" required>
+        <input id="paper-height" type="number" min="1" max="2000" step="0.1" value="150" placeholder="Высота" aria-label="Высота бумаги" required>
+      </div>
     </div>
 
     <div class="control-group photo-group">
@@ -210,12 +286,6 @@
         <button class="btn-secondary" id="btn-portrait">Книжная</button>
         <button class="btn-secondary" id="btn-landscape">Альбомная</button>
       </div>
-    </div>
-
-    <!-- Масштабирование (Зум) слайдером -->
-    <div class="control-group">
-      <label>Масштаб кадра: <span class="val-badge" id="zoom-val">100%</span></label>
-      <input type="range" id="zoom-range" min="30" max="400" value="100">
     </div>
 
     <!-- Поворот и отзеркаливание -->
@@ -228,13 +298,26 @@
       </div>
     </div>
 
-    <!-- Цветокоррекция с процентами -->
+    <!-- Цветокоррекция -->
     <div class="control-group">
-      <label>Яркость: <span class="val-badge" id="brightness-val">100%</span></label>
-      <input type="range" id="brightness-range" min="70" max="150" value="100">
-      <label style="margin-top: 4px;">Контраст: <span class="val-badge" id="contrast-val">100%</span></label>
-      <input type="range" id="contrast-range" min="70" max="150" value="100">
-      <button class="btn-secondary" id="btn-reset-color" style="margin-top: 4px;">Сбросить цвет в 100%</button>
+      <label>Яркость</label>
+      <div class="row">
+        <input type="range" id="brightness-range" min="0" max="300" value="100">
+        <div class="percent-control">
+          <input id="brightness-value" type="number" min="0" max="300" step="1" value="100" aria-label="Яркость, проценты">
+          <span>%</span>
+          <button class="btn-secondary" id="btn-reset-brightness" type="button" aria-label="Сбросить яркость">↺</button>
+        </div>
+      </div>
+      <label style="margin-top: 4px;">Контраст</label>
+      <div class="row">
+        <input type="range" id="contrast-range" min="0" max="300" value="100">
+        <div class="percent-control">
+          <input id="contrast-value" type="number" min="0" max="300" step="1" value="100" aria-label="Контраст, проценты">
+          <span>%</span>
+          <button class="btn-secondary" id="btn-reset-contrast" type="button" aria-label="Сбросить контраст">↺</button>
+        </div>
+      </div>
     </div>
 
     <!-- Готовность -->
@@ -248,12 +331,10 @@
     <button class="btn-secondary" id="btn-printer-settings" type="button">
       Проверить настройки в драйвере...
     </button>
-    <div id="driver-settings-status" style="font-size: 11px; color: #8e8ea6;">
-      Выберите принтер, чтобы загрузить доступные типы бумаги и режимы Epson.
-    </div>
+    <div id="driver-settings-status" style="font-size: 11px; color: #8e8ea6;"></div>
 
     <div class="control-group">
-      <label>Тип бумаги (из драйвера)</label>
+      <label>Тип бумаги</label>
       <select id="paper-type">
         <option value="glossy">Глянцевая (Photo Glossy)</option>
         <option value="matte">Матовая (Matte)</option>
@@ -271,10 +352,10 @@
     </div>
 
     <div class="control-group photo-group">
-      <label>Поля листа (без полей — для фотобумаги)</label>
+      <label>Поля</label>
       <select id="border-select">
-        <option value="false">Без полей (В край листа)</option>
-        <option value="true">С полями (Белая рамка 4 мм)</option>
+        <option value="false">Без полей</option>
+        <option value="true">С полями (4 мм)</option>
       </select>
     </div>
 
@@ -290,7 +371,15 @@
   <!-- Рабочее пространство -->
   <div id="workspace">
     <canvas id="preview-canvas"></canvas>
-    <div id="hud-info">Тяните мышью для центровки • Колесико / ползунок: Зум • Затемненная зона будет отрезана</div>
+    <div class="workspace-zoom-control">
+      <span>Масштаб</span>
+      <input type="range" id="zoom-range" min="5" max="1000" value="100" aria-label="Масштаб кадра">
+      <div class="percent-control">
+        <input id="zoom-value" type="number" min="5" max="1000" step="1" value="100" aria-label="Масштаб, проценты">
+        <span>%</span>
+      </div>
+      <button class="btn-secondary" id="btn-reset-zoom" type="button" aria-label="Вместить кадр">↺</button>
+    </div>
   </div>
 
   <script>
@@ -319,11 +408,56 @@
     let docType = '35x45';
     let docSheet = '100x150';
     let showFaceGuide = true;
+    const DOC_FORMATS = {
+      '35x45': { w: 35, h: 45 },
+      '30x40': { w: 30, h: 40 },
+      '33x48': { w: 33, h: 48 },
+      '35x35': { w: 35, h: 35 },
+      '40x50': { w: 40, h: 50 },
+      '40x60': { w: 40, h: 60 },
+      '45x45': { w: 45, h: 45 },
+      '50x50': { w: 50, h: 50 },
+      '50.8x50.8': { w: 50.8, h: 50.8 },
+      '50x70': { w: 50, h: 70 },
+      '90x120': { w: 90, h: 120 }
+    };
     const pendingPrints = new Map();
     const configuredPrinters = new Map();
+    let epsonQualityRequest = 0;
+    let mediaTypesRequest = 0;
 
     const canvas = document.getElementById('preview-canvas');
     const ctx = canvas.getContext('2d');
+
+    function readDimensionPair(widthInput, heightInput) {
+      const width = Number(widthInput.value);
+      const height = Number(heightInput.value);
+      if (
+        !widthInput.value || !heightInput.value
+        || !Number.isFinite(width) || !Number.isFinite(height)
+        || width < 1 || width > 2000 || height < 1 || height > 2000
+      ) return null;
+      return { width, height };
+    }
+
+    function getDocPhotoSize(state) {
+      if (state.docType === 'custom') {
+        return { w: state.docPhotoWidthMm, h: state.docPhotoHeightMm };
+      }
+      return DOC_FORMATS[state.docType] || DOC_FORMATS['35x45'];
+    }
+
+    function getDocSheetSize(state) {
+      if (state.docSheet === 'custom') {
+        return { width: state.docSheetWidthMm, height: state.docSheetHeightMm };
+      }
+      const [width, height] = state.docSheet.split('x').map(Number);
+      return { width, height };
+    }
+
+    function setCustomSizeVisible(id, visible) {
+      document.getElementById(id).classList.toggle('visible', visible);
+    }
 
     let isDragging = false;
     let startX = 0, startY = 0;
@@ -376,8 +510,8 @@
     function resizeCanvas() {
       const ws = document.getElementById('workspace');
       canvas.width = ws.clientWidth - 30;
-      canvas.height = ws.clientHeight - 30;
-      if (activeIndex >= 0 && queue[activeIndex].state.baseFitScale) {
+      canvas.height = ws.clientHeight - 90;
+      if (activeIndex >= 0 && queue[activeIndex].state.baseFitScale > 0) {
         const state = queue[activeIndex].state;
         const zoomFactor = state.scale / state.baseFitScale;
         calculateBaseFit(queue[activeIndex]);
@@ -502,15 +636,8 @@
     // Рендер кадрирования документа с биометрической разметкой лица
     function renderDocPreview(item) {
       const s = item.state;
-      const docSizes = {
-        '35x45': { w: 35, h: 45 },
-        '30x40': { w: 30, h: 40 },
-        '50x50': { w: 50, h: 50 },
-        '90x120': { w: 90, h: 120 }
-      };
-      const curDoc = docSizes[docType] || { w: 35, h: 45 };
-
-      const [sheetWidthMm, sheetHeightMm] = docSheet.split('x').map(Number);
+      const curDoc = getDocPhotoSize(s);
+      const { width: sheetWidthMm, height: sheetHeightMm } = getDocSheetSize(s);
       const pxPerMm = Math.min((canvas.width * 0.75) / sheetWidthMm, (canvas.height * 0.75) / sheetHeightMm);
       const sheetW = sheetWidthMm * pxPerMm;
       const sheetH = sheetHeightMm * pxPerMm;
@@ -518,7 +645,7 @@
       const sheetY = (canvas.height - sheetH) / 2;
       let cols = Math.max(1, Math.floor((sheetWidthMm - 10) / (curDoc.w + 2)));
       let rows = Math.max(1, Math.floor((sheetHeightMm - 10) / (curDoc.h + 2)));
-      if (docSheet === '100x150' && docType === '35x45') {
+      if (s.docSheet === '100x150' && s.docType === '35x45') {
         cols = 2;
         rows = 2;
       }
@@ -623,24 +750,40 @@
       setZoom(queue[activeIndex].state.scale * zoomMul);
     }, { passive: false });
 
-    // Слайдер зума
-    document.getElementById('zoom-range').oninput = (e) => {
+    function setZoomPercent(value) {
       if (activeIndex === -1) return;
-      const baseScale = queue[activeIndex].state.baseFitScale || 1.0;
-      const factor = e.target.value / 100;
-      queue[activeIndex].state.scale = baseScale * factor;
-      document.getElementById('zoom-val').textContent = e.target.value + '%';
+      const pct = Math.max(5, Math.min(1000, Number(value)));
+      if (!Number.isFinite(pct)) return;
+      const state = queue[activeIndex].state;
+      const baseScale = state.baseFitScale || 1.0;
+      state.scale = Math.max(0.05, Math.min(baseScale * pct / 100, 15.0));
+      const actualPct = Math.round((state.scale / baseScale) * 100);
+      document.getElementById('zoom-range').value = actualPct;
+      document.getElementById('zoom-value').value = actualPct;
+      render();
+    }
+
+    document.getElementById('zoom-range').oninput = (e) => {
+      setZoomPercent(e.target.value);
+    };
+    document.getElementById('zoom-value').onchange = (e) => {
+      setZoomPercent(e.target.value);
+    };
+    document.getElementById('btn-reset-zoom').onclick = () => {
+      if (activeIndex === -1) return;
+      const state = queue[activeIndex].state;
+      state.x = 0;
+      state.y = 0;
+      state.scale = state.baseFitScale;
+      document.getElementById('zoom-range').value = 100;
+      document.getElementById('zoom-value').value = 100;
       render();
     };
 
     function setZoom(newScale) {
       const s = queue[activeIndex].state;
-      s.scale = Math.max(0.05, Math.min(newScale, 15.0));
       const baseScale = s.baseFitScale || 1.0;
-      const pct = Math.round((s.scale / baseScale) * 100);
-      document.getElementById('zoom-range').value = pct;
-      document.getElementById('zoom-val').textContent = pct + '%';
-      render();
+      setZoomPercent((newScale / baseScale) * 100);
     }
 
     // --- РАБОТА С ОЧЕРЕДЬЮ ФОТО ---
@@ -657,10 +800,15 @@
               img: img,
               isReady: false,
               state: {
-                x: 0, y: 0, scale: 1.0, baseFitScale: 1.0,
+                x: 0, y: 0, scale: 0, baseFitScale: 0,
                 rotation: 0, flipped: false,
                 brightness: 100, contrast: 100,
                 sheetWidthMm: 100, sheetHeightMm: 150,
+                customPaperSizeValid: true,
+                docPhotoWidthMm: 35, docPhotoHeightMm: 45,
+                docSheetWidthMm: 100, docSheetHeightMm: 150,
+                customDocPhotoSizeValid: true,
+                customDocSheetSizeValid: true,
                 isLandscape: false, hasBorder: false,
                 mode: 'photo', docType: '35x45',
                 docSheet: '100x150', showFaceGuide: true
@@ -697,21 +845,34 @@
     // Синхронизация контролов боковой панели с выбранным фото
     function syncUIWithItemState(item) {
       const s = item.state;
-      document.getElementById('format-select').value = `${s.sheetWidthMm}x${s.sheetHeightMm}`;
+      const formatSelect = document.getElementById('format-select');
+      const paperFormat = `${s.sheetWidthMm}x${s.sheetHeightMm}`;
+      formatSelect.value = [...formatSelect.options].some((option) => option.value === paperFormat)
+        ? paperFormat
+        : 'custom';
+      document.getElementById('paper-width').value = s.sheetWidthMm;
+      document.getElementById('paper-height').value = s.sheetHeightMm;
+      setCustomSizeVisible('paper-size-controls', formatSelect.value === 'custom');
       document.getElementById('border-select').value = s.hasBorder ? 'true' : 'false';
       updateBorderlessAvailability();
       document.getElementById('brightness-range').value = s.brightness;
       document.getElementById('contrast-range').value = s.contrast;
-      document.getElementById('brightness-val').textContent = s.brightness + '%';
-      document.getElementById('contrast-val').textContent = s.contrast + '%';
+      document.getElementById('brightness-value').value = s.brightness;
+      document.getElementById('contrast-value').value = s.contrast;
 
-      // Вычисляем базовую подгонку (fit), если еще не задана
-      if (!s.baseFitScale) {
+      document.getElementById('doc-photo-width').value = s.docPhotoWidthMm;
+      document.getElementById('doc-photo-height').value = s.docPhotoHeightMm;
+      document.getElementById('doc-sheet-width').value = s.docSheetWidthMm;
+      document.getElementById('doc-sheet-height').value = s.docSheetHeightMm;
+      setCustomSizeVisible('doc-photo-size-controls', s.docType === 'custom');
+      setCustomSizeVisible('doc-sheet-size-controls', s.docSheet === 'custom');
+
+      if (s.baseFitScale <= 0) {
         calculateBaseFit(item);
       }
       const pct = Math.round((s.scale / s.baseFitScale) * 100);
       document.getElementById('zoom-range').value = pct;
-      document.getElementById('zoom-val').textContent = pct + '%';
+      document.getElementById('zoom-value').value = pct;
 
       updateReadyButtonUI(item.isReady);
     }
@@ -719,15 +880,9 @@
     function calculateBaseFit(item) {
       const s = item.state;
       if (currentMode === 'doc') {
-        const docSizes = {
-          '35x45': { w: 35, h: 45 },
-          '30x40': { w: 30, h: 40 },
-          '50x50': { w: 50, h: 50 },
-          '90x120': { w: 90, h: 120 }
-        };
-        const doc = docSizes[s.docType] || docSizes['35x45'];
-        const sheet = s.docSheet.split('x').map(Number);
-        const screenPxPerMm = Math.min((canvas.width * 0.75) / sheet[0], (canvas.height * 0.75) / sheet[1]);
+        const doc = getDocPhotoSize(s);
+        const sheet = getDocSheetSize(s);
+        const screenPxPerMm = Math.min((canvas.width * 0.75) / sheet.width, (canvas.height * 0.75) / sheet.height);
         const isRotated = s.rotation % 180 !== 0;
         const imageWidth = isRotated ? item.img.height : item.img.width;
         const imageHeight = isRotated ? item.img.width : item.img.height;
@@ -819,15 +974,41 @@
     // --- ЭЛЕМЕНТЫ УПРАВЛЕНИЯ ПАНЕЛИ ---
     document.getElementById('format-select').onchange = (e) => {
       if (activeIndex === -1) return;
-      const p = e.target.value.split('x');
       const s = queue[activeIndex].state;
-      s.sheetWidthMm = parseInt(p[0]);
-      s.sheetHeightMm = parseInt(p[1]);
+      if (e.target.value === 'custom') {
+        document.getElementById('paper-width').value = s.sheetWidthMm;
+        document.getElementById('paper-height').value = s.sheetHeightMm;
+        setCustomSizeVisible('paper-size-controls', true);
+        return;
+      }
+      const [width, height] = e.target.value.split('x').map(Number);
+      s.sheetWidthMm = width;
+      s.sheetHeightMm = height;
+      s.customPaperSizeValid = true;
+      setCustomSizeVisible('paper-size-controls', false);
       calculateBaseFit(queue[activeIndex]);
       syncUIWithItemState(queue[activeIndex]);
       render();
       refreshEpsonQualityModes();
     };
+
+    function applyCustomPaperSize() {
+      if (activeIndex === -1) return;
+      const widthInput = document.getElementById('paper-width');
+      const heightInput = document.getElementById('paper-height');
+      const dimensions = readDimensionPair(widthInput, heightInput);
+      const state = queue[activeIndex].state;
+      state.customPaperSizeValid = Boolean(dimensions);
+      if (!dimensions) return;
+      state.sheetWidthMm = dimensions.width;
+      state.sheetHeightMm = dimensions.height;
+      calculateBaseFit(queue[activeIndex]);
+      syncUIWithItemState(queue[activeIndex]);
+      render();
+      refreshEpsonQualityModes();
+    }
+    document.getElementById('paper-width').oninput = applyCustomPaperSize;
+    document.getElementById('paper-height').oninput = applyCustomPaperSize;
 
     document.getElementById('border-select').onchange = (e) => {
       if (activeIndex === -1) return;
@@ -898,37 +1079,35 @@
       render();
     };
 
-    // Цветокоррекция
-    document.getElementById('brightness-range').oninput = (e) => {
+    function setColorValue(key, value) {
       if (activeIndex === -1) return;
-      queue[activeIndex].state.brightness = e.target.value;
-      document.getElementById('brightness-val').textContent = e.target.value + '%';
+      const percent = Number(value);
+      if (!Number.isFinite(percent) || percent < 0 || percent > 300) return;
+      queue[activeIndex].state[key] = percent;
+      document.getElementById(`${key}-range`).value = percent;
+      document.getElementById(`${key}-value`).value = percent;
       render();
-    };
-
-    document.getElementById('contrast-range').oninput = (e) => {
-      if (activeIndex === -1) return;
-      queue[activeIndex].state.contrast = e.target.value;
-      document.getElementById('contrast-val').textContent = e.target.value + '%';
-      render();
-    };
-
-    document.getElementById('btn-reset-color').onclick = () => {
-      if (activeIndex === -1) return;
-      queue[activeIndex].state.brightness = 100;
-      queue[activeIndex].state.contrast = 100;
-      document.getElementById('brightness-range').value = 100;
-      document.getElementById('contrast-range').value = 100;
-      document.getElementById('brightness-val').textContent = '100%';
-      document.getElementById('contrast-val').textContent = '100%';
-      render();
-    };
+    }
+    ['brightness', 'contrast'].forEach((key) => {
+      document.getElementById(`${key}-range`).oninput = (e) => {
+        setColorValue(key, e.target.value);
+      };
+      document.getElementById(`${key}-value`).onchange = (e) => {
+        setColorValue(key, e.target.value);
+      };
+      document.getElementById(`btn-reset-${key}`).onclick = () => {
+        setColorValue(key, 100);
+      };
+    });
 
     // Документные контролы
     document.getElementById('doc-type-select').onchange = (e) => {
       docType = e.target.value;
       if (activeIndex >= 0) {
-        queue[activeIndex].state.docType = docType;
+        const state = queue[activeIndex].state;
+        state.docType = docType;
+        if (docType !== 'custom') state.customDocPhotoSizeValid = true;
+        setCustomSizeVisible('doc-photo-size-controls', docType === 'custom');
         calculateBaseFit(queue[activeIndex]);
       }
       render();
@@ -936,11 +1115,47 @@
     document.getElementById('doc-sheet-select').onchange = (e) => {
       docSheet = e.target.value;
       if (activeIndex >= 0) {
-        queue[activeIndex].state.docSheet = docSheet;
+        const state = queue[activeIndex].state;
+        state.docSheet = docSheet;
+        if (docSheet !== 'custom') state.customDocSheetSizeValid = true;
+        setCustomSizeVisible('doc-sheet-size-controls', docSheet === 'custom');
         calculateBaseFit(queue[activeIndex]);
       }
       render();
     };
+    function applyCustomDocPhotoSize() {
+      if (activeIndex === -1) return;
+      const state = queue[activeIndex].state;
+      const dimensions = readDimensionPair(
+        document.getElementById('doc-photo-width'),
+        document.getElementById('doc-photo-height')
+      );
+      state.customDocPhotoSizeValid = Boolean(dimensions);
+      if (!dimensions) return;
+      state.docPhotoWidthMm = dimensions.width;
+      state.docPhotoHeightMm = dimensions.height;
+      calculateBaseFit(queue[activeIndex]);
+      render();
+    }
+    document.getElementById('doc-photo-width').oninput = applyCustomDocPhotoSize;
+    document.getElementById('doc-photo-height').oninput = applyCustomDocPhotoSize;
+
+    function applyCustomDocSheetSize() {
+      if (activeIndex === -1) return;
+      const state = queue[activeIndex].state;
+      const dimensions = readDimensionPair(
+        document.getElementById('doc-sheet-width'),
+        document.getElementById('doc-sheet-height')
+      );
+      state.customDocSheetSizeValid = Boolean(dimensions);
+      if (!dimensions) return;
+      state.docSheetWidthMm = dimensions.width;
+      state.docSheetHeightMm = dimensions.height;
+      calculateBaseFit(queue[activeIndex]);
+      render();
+    }
+    document.getElementById('doc-sheet-width').oninput = applyCustomDocSheetSize;
+    document.getElementById('doc-sheet-height').oninput = applyCustomDocSheetSize;
     document.getElementById('check-face-guide').onchange = (e) => {
       showFaceGuide = e.target.checked;
       if (activeIndex >= 0) queue[activeIndex].state.showFaceGuide = showFaceGuide;
@@ -951,6 +1166,15 @@
     function generateHighResPayload(item) {
       const DPI_FACTOR = 300 / 25.4;
       const s = item.state;
+      if (s.mode === 'photo' && !s.customPaperSizeValid) {
+        throw new Error('Введите корректную ширину и высоту бумаги в миллиметрах.');
+      }
+      if (s.mode === 'doc' && s.docType === 'custom' && !s.customDocPhotoSizeValid) {
+        throw new Error('Введите корректную ширину и высоту фотографии в миллиметрах.');
+      }
+      if (s.mode === 'doc' && s.docSheet === 'custom' && !s.customDocSheetSizeValid) {
+        throw new Error('Введите корректную ширину и высоту листа в миллиметрах.');
+      }
 
       if (s.mode === 'photo') {
         let wMm = s.isLandscape ? s.sheetHeightMm : s.sheetWidthMm;
@@ -999,9 +1223,7 @@
           image_base64: outCanvas.toDataURL('image/jpeg', 0.98)
         };
       } else {
-        const sheetParts = s.docSheet.split('x');
-        const sheetWMm = parseInt(sheetParts[0]);
-        const sheetHMm = parseInt(sheetParts[1]);
+        const { width: sheetWMm, height: sheetHMm } = getDocSheetSize(s);
 
         const finalW = Math.round(sheetWMm * DPI_FACTOR);
         const finalH = Math.round(sheetHMm * DPI_FACTOR);
@@ -1014,8 +1236,7 @@
         oCtx.fillStyle = "#ffffff";
         oCtx.fillRect(0, 0, finalW, finalH);
 
-        const docSizes = { '35x45': { w: 35, h: 45 }, '30x40': { w: 30, h: 40 }, '50x50': { w: 50, h: 50 }, '90x120': { w: 90, h: 120 } };
-        const d = docSizes[s.docType] || { w: 35, h: 45 };
+        const d = getDocPhotoSize(s);
 
         const singleW = Math.round(d.w * DPI_FACTOR);
         const singleH = Math.round(d.h * DPI_FACTOR);
@@ -1105,13 +1326,9 @@
       const isEpson = printerName.toLowerCase().startsWith('epson ');
       const settings = isEpson ? null : configuredPrinters.get(printerName);
       const qualitySelect = document.getElementById('print-quality');
-      let status = isEpson
-        ? 'Качество и физический режим «Без полей» будут переданы в Epson из приложения.'
-        : 'Формат, тип бумаги и качество передаются драйверу. Проверьте принятые значения в его окне.';
-      if (settings) {
-        status = 'Настройки из подтверждённого окна драйвера сохранены для следующих заданий. Проверьте качество и тип бумаги.';
-      }
-      document.getElementById('driver-settings-status').textContent = status;
+      document.getElementById('driver-settings-status').textContent = settings
+        ? 'Настройки драйвера сохранены.'
+        : '';
       const configured = !isEpson && Boolean(settings);
       document.getElementById('paper-type').disabled = configured;
       document.getElementById('btn-printer-settings').style.display = isEpson ? 'none' : '';
@@ -1145,7 +1362,6 @@
       return item ? !item.state.hasBorder : false;
     }
 
-    let epsonQualityRequest = 0;
     async function refreshEpsonQualityModes() {
       const printerName = document.getElementById('printer-select').value;
       const qualitySelect = document.getElementById('print-quality');
@@ -1192,7 +1408,7 @@
           ? previousQuality
           : response.quality_modes[response.quality_modes.length - 1].id;
         qualitySelect.disabled = false;
-        status.textContent = 'Качество и физический режим «Без полей» будут переданы в Epson из приложения.';
+        status.textContent = '';
         if (!qualityStillAvailable && previousQuality) {
           status.textContent = `Выбранный ранее режим недоступен для этой бумаги и полей. Установлено качество «${qualitySelect.selectedOptions[0].text}».`;
         }
@@ -1213,7 +1429,6 @@
       return selected ? selected.dataset.ticketOption || null : null;
     }
 
-    let mediaTypesRequest = 0;
     async function refreshDriverMediaTypes() {
       const printerName = document.getElementById('printer-select').value;
       const select = document.getElementById('paper-type');
@@ -1295,13 +1510,28 @@
       let borderless = null;
 
       if (currentMode === 'doc') {
-        [widthMm, heightMm] = docSheet.split('x').map(Number);
+        const item = queue[activeIndex];
+        if (item) {
+          const sheet = getDocSheetSize(item.state);
+          widthMm = sheet.width;
+          heightMm = sheet.height;
+        } else if (docSheet === 'custom') {
+          widthMm = Number(document.getElementById('doc-sheet-width').value);
+          heightMm = Number(document.getElementById('doc-sheet-height').value);
+        } else {
+          [widthMm, heightMm] = docSheet.split('x').map(Number);
+        }
       } else {
         const item = queue[activeIndex];
         const state = item ? item.state : null;
         const [sheetWidthMm, sheetHeightMm] = state
           ? [state.sheetWidthMm, state.sheetHeightMm]
-          : document.getElementById('format-select').value.split('x').map(Number);
+          : document.getElementById('format-select').value === 'custom'
+            ? [
+                Number(document.getElementById('paper-width').value),
+                Number(document.getElementById('paper-height').value)
+              ]
+            : document.getElementById('format-select').value.split('x').map(Number);
         const isLandscape = state ? state.isLandscape : false;
         widthMm = isLandscape ? sheetHeightMm : sheetWidthMm;
         heightMm = isLandscape ? sheetWidthMm : sheetHeightMm;
