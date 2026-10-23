@@ -254,10 +254,10 @@
       <select id="printer-select"><option>Поиск принтеров...</option></select>
     </div>
     <button class="btn-secondary" id="btn-printer-settings" type="button">
-      Настройки драйвера принтера...
+      Проверить настройки в драйвере...
     </button>
     <div id="driver-settings-status" style="font-size: 11px; color: #8e8ea6;">
-      Настройки Epson можно выбрать отдельно и применить к следующим заданиям.
+      Приложение попробует заполнить формат, качество и бумагу. Сверьте их в окне драйвера; «Без полей» включается там вручную.
     </div>
 
     <div class="control-group">
@@ -307,7 +307,7 @@
     let docSheet = '100x150';
     let showFaceGuide = true;
     const pendingPrints = new Map();
-    const configuredPrinters = new Set();
+    const configuredPrinters = new Map();
 
     const canvas = document.getElementById('preview-canvas');
     const ctx = canvas.getContext('2d');
@@ -1051,12 +1051,52 @@
 
     function updateDriverSettingsStatus() {
       const printerName = document.getElementById('printer-select').value;
-      const configured = configuredPrinters.has(printerName);
-      document.getElementById('driver-settings-status').textContent = configured
-        ? 'Качество и бумага берутся из драйвера. Выберите в драйвере тот же формат и ориентацию, что в приложении.'
-        : 'Настройки Epson можно выбрать отдельно и применить к следующим заданиям.';
+      const settings = configuredPrinters.get(printerName);
+      let status = 'Приложение попробует заполнить формат, качество и бумагу. Сверьте их в окне драйвера; «Без полей» включается там вручную.';
+      if (settings) {
+        status = 'Настройки из подтверждённого окна драйвера сохранены для следующих заданий. Убедитесь, что Epson принял качество и тип бумаги.';
+        if (settings.borderless === true) {
+          status += ' Проверьте, что «Без полей» включено в драйвере Epson.';
+        } else if (settings.borderless === false) {
+          status += ' Проверьте, что «Без полей» выключено в драйвере Epson.';
+        } else {
+          status += ' Сверьте настройку «Без полей» с выбранным режимом.';
+        }
+      }
+      document.getElementById('driver-settings-status').textContent = status;
+      const configured = Boolean(settings);
       document.getElementById('paper-type').disabled = configured;
       document.getElementById('print-quality').disabled = configured;
+    }
+
+    function getDriverSettingsOptions() {
+      let widthMm;
+      let heightMm;
+      let borderless = null;
+
+      if (currentMode === 'doc') {
+        [widthMm, heightMm] = docSheet.split('x').map(Number);
+      } else {
+        const item = queue[activeIndex];
+        const state = item ? item.state : null;
+        const [sheetWidthMm, sheetHeightMm] = state
+          ? [state.sheetWidthMm, state.sheetHeightMm]
+          : document.getElementById('format-select').value.split('x').map(Number);
+        const isLandscape = state ? state.isLandscape : false;
+        widthMm = isLandscape ? sheetHeightMm : sheetWidthMm;
+        heightMm = isLandscape ? sheetWidthMm : sheetHeightMm;
+        borderless = state
+          ? !state.hasBorder
+          : document.getElementById('border-select').value === 'false';
+      }
+
+      return {
+        width_mm: widthMm,
+        height_mm: heightMm,
+        quality: document.getElementById('print-quality').value,
+        paper_type: document.getElementById('paper-type').value,
+        borderless
+      };
     }
 
     document.getElementById('printer-select').addEventListener('change', updateDriverSettingsStatus);
@@ -1073,11 +1113,15 @@
 
       const button = document.getElementById('btn-printer-settings');
       button.disabled = true;
-      button.textContent = 'Ожидание настроек драйвера...';
+      button.textContent = 'Открытие драйвера...';
       try {
-        const response = JSON.parse(await pyBridge.configure_printer(printerName));
+        const options = getDriverSettingsOptions();
+        const response = JSON.parse(await pyBridge.configure_printer(
+          printerName,
+          JSON.stringify(options)
+        ));
         if (response.status === 'configured') {
-          configuredPrinters.add(printerName);
+          configuredPrinters.set(printerName, options);
           updateDriverSettingsStatus();
         } else if (response.status === 'error') {
           alert('Не удалось открыть настройки принтера: ' + response.message);
@@ -1085,7 +1129,7 @@
       } catch (error) {
         alert('Не удалось открыть настройки принтера: ' + error.message);
       } finally {
-        button.textContent = 'Настройки драйвера принтера...';
+        button.textContent = 'Проверить настройки в драйвере...';
         button.disabled = false;
       }
     };

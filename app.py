@@ -196,7 +196,9 @@ def configure_devmode(
         }.get(paper_type, win32con.DMMEDIA_GLOSSY)
 
 
-def find_supported_paper(printer_name, port_name, width_mm, height_mm):
+def find_supported_paper(
+    printer_name, port_name, width_mm, height_mm, preferred_name_parts=()
+):
     paper_ids = win32print.DeviceCapabilities(
         printer_name, port_name, win32con.DC_PAPERS, None
     )
@@ -227,13 +229,101 @@ def find_supported_paper(printer_name, port_name, width_mm, height_mm):
         )
     if not candidates:
         return None
-    nearest = min(candidates)
+    preferred = [
+        candidate
+        for candidate in candidates
+        if any(
+            name_part in "".join(candidate[5].casefold().split())
+            for name_part in preferred_name_parts
+        )
+    ]
+    nearest = min(preferred or candidates)
     if nearest[0] > 0.03:
         return None
     return nearest[2:]
 
 
-def open_printer_settings(printer_name, owner_window):
+def find_driver_media_type(printer_name, port_name, paper_type):
+    media_types = win32print.DeviceCapabilities(
+        printer_name, port_name, win32con.DC_MEDIATYPES, None
+    )
+    media_names = win32print.DeviceCapabilities(
+        printer_name, port_name, win32con.DC_MEDIATYPENAMES, None
+    )
+    preferred_names = {
+        "glossy": (
+            "photo paper glossy",
+            "epson glossy",
+            "epson premium glossy",
+            "epson ultra glossy",
+        ),
+        "matte": ("epson matte", "epson archival matte"),
+        "plain": ("plain paper", "простая бумага"),
+    }.get(paper_type, ())
+    named_media = [
+        (" ".join(name.casefold().split()), media_type)
+        for name, media_type in zip(media_names, media_types)
+    ]
+    for preferred_name in preferred_names:
+        for media_name, media_type in named_media:
+            if media_name == preferred_name:
+                return media_type
+    return None
+
+
+def prepare_driver_devmode(printer_name, port_name, devmode, options):
+    width_mm = float(options.get("width_mm", 0))
+    height_mm = float(options.get("height_mm", 0))
+    if not (0 < width_mm <= 2000 and 0 < height_mm <= 2000):
+        raise ValueError("Размеры бумаги должны быть больше 0 и не превышать 2000 мм.")
+
+    quality = options.get("quality", "high")
+    if quality not in ("high", "standard", "draft"):
+        raise ValueError("Выбрано неизвестное качество печати.")
+    paper_type = options.get("paper_type", "glossy")
+    if paper_type not in ("glossy", "matte", "plain"):
+        raise ValueError("Выбран неизвестный тип бумаги.")
+
+    format_names = {
+        (100, 150): ("10x15", "4x6"),
+        (130, 180): ("13x18", "5x7"),
+        (150, 200): ("15x20",),
+    }
+    target_format = tuple(sorted((round(width_mm), round(height_mm))))
+    paper_form = find_supported_paper(
+        printer_name,
+        port_name,
+        width_mm,
+        height_mm,
+        preferred_name_parts=format_names.get(target_format, ()),
+    )
+    if paper_form is None:
+        configure_paper_size(devmode, width_mm, height_mm)
+    else:
+        configure_paper_size(
+            devmode, width_mm, height_mm, paper_size_id=paper_form[0]
+        )
+
+    devmode.Fields |= win32con.DM_PRINTQUALITY
+    devmode.PrintQuality = {
+        "high": win32con.DMRES_HIGH,
+        "standard": win32con.DMRES_MEDIUM,
+        "draft": win32con.DMRES_DRAFT,
+    }[quality]
+    if hasattr(devmode, "MediaType"):
+        media_type = find_driver_media_type(printer_name, port_name, paper_type)
+        devmode.Fields |= win32con.DM_MEDIATYPE
+        if media_type is None:
+            devmode.MediaType = {
+                "glossy": win32con.DMMEDIA_GLOSSY,
+                "matte": win32con.DMMEDIA_STANDARD,
+                "plain": win32con.DMMEDIA_STANDARD,
+            }[paper_type]
+        else:
+            devmode.MediaType = media_type
+
+
+def open_printer_settings(printer_name, owner_window, options):
     _require_windows_printer_runtime()
     if not isinstance(printer_name, str) or not printer_name.strip():
         raise ValueError("Выберите установленный принтер Windows.")
@@ -245,6 +335,12 @@ def open_printer_settings(printer_name, owner_window):
         output_devmode = win32print.GetPrinter(printer_handle, 2).get("pDevMode")
         if input_devmode is None or output_devmode is None:
             raise RuntimeError("Драйвер принтера не предоставил параметры DEVMODE.")
+        prepare_driver_devmode(
+            printer_name,
+            printer_info.get("pPortName"),
+            input_devmode,
+            options,
+        )
 
         result = win32print.DocumentProperties(
             owner_window,
@@ -563,10 +659,15 @@ class PrintBridge(QObject):
         self._printer_devmodes = {}
 
     @pyqtSlot(str, result=str)
-    def configure_printer(self, printer_name):
+    def configure_printer(self, printer_name, options_json):
         try:
+            options = json.loads(options_json)
+            if not isinstance(options, dict):
+                raise ValueError("Некорректный формат настроек принтера.")
             owner_window = win32gui.GetForegroundWindow()
-            devmode = open_printer_settings(printer_name, owner_window)
+            devmode = open_printer_settings(
+                printer_name, owner_window, options
+            )
             if devmode is None:
                 return json.dumps({"status": "cancelled"}, ensure_ascii=False)
             self._printer_devmodes[printer_name] = devmode
