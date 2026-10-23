@@ -253,6 +253,12 @@
       <label>Принтер Windows</label>
       <select id="printer-select"><option>Поиск принтеров...</option></select>
     </div>
+    <button class="btn-secondary" id="btn-printer-settings" type="button">
+      Настройки драйвера принтера...
+    </button>
+    <div id="driver-settings-status" style="font-size: 11px; color: #8e8ea6;">
+      Настройки Epson можно выбрать отдельно и применить к следующим заданиям.
+    </div>
 
     <div class="control-group">
       <label>Тип бумаги</label>
@@ -301,6 +307,7 @@
     let docSheet = '100x150';
     let showFaceGuide = true;
     const pendingPrints = new Map();
+    const configuredPrinters = new Set();
 
     const canvas = document.getElementById('preview-canvas');
     const ctx = canvas.getContext('2d');
@@ -347,6 +354,7 @@
         if (!data.printers.length) {
           sel.add(new Option('Принтеры не найдены', ''));
         }
+        updateDriverSettingsStatus();
       });
     });
 
@@ -1040,6 +1048,47 @@
         });
       });
     }
+
+    function updateDriverSettingsStatus() {
+      const printerName = document.getElementById('printer-select').value;
+      const configured = configuredPrinters.has(printerName);
+      document.getElementById('driver-settings-status').textContent = configured
+        ? 'Качество и бумага берутся из драйвера. Выберите в драйвере тот же формат и ориентацию, что в приложении.'
+        : 'Настройки Epson можно выбрать отдельно и применить к следующим заданиям.';
+      document.getElementById('paper-type').disabled = configured;
+      document.getElementById('print-quality').disabled = configured;
+    }
+
+    document.getElementById('printer-select').addEventListener('change', updateDriverSettingsStatus);
+    document.getElementById('btn-printer-settings').onclick = async () => {
+      const printerName = document.getElementById('printer-select').value;
+      if (!printerName) {
+        alert('Выберите установленный принтер Windows.');
+        return;
+      }
+      if (!pyBridge) {
+        alert('Подключение к подсистеме печати не установлено.');
+        return;
+      }
+
+      const button = document.getElementById('btn-printer-settings');
+      button.disabled = true;
+      button.textContent = 'Ожидание настроек драйвера...';
+      try {
+        const response = JSON.parse(await pyBridge.configure_printer(printerName));
+        if (response.status === 'configured') {
+          configuredPrinters.add(printerName);
+          updateDriverSettingsStatus();
+        } else if (response.status === 'error') {
+          alert('Не удалось открыть настройки принтера: ' + response.message);
+        }
+      } catch (error) {
+        alert('Не удалось открыть настройки принтера: ' + error.message);
+      } finally {
+        button.textContent = 'Настройки драйвера принтера...';
+        button.disabled = false;
+      }
+    };
 
     function getPaperFallbackMessage(result) {
       if (!result.paper_fallback) return '';

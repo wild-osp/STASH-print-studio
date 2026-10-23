@@ -1,23 +1,149 @@
 import base64
 import ctypes
-import ctypes.wintypes
 import io
 import json
 import logging
 import os
 import sys
 
-import win32con
-import win32gui
-import win32print
-from PIL import Image, UnidentifiedImageError
-from PyQt6.QtCore import QObject, QRunnable, QThreadPool, QUrl, pyqtSignal, pyqtSlot
-from PyQt6.QtWebChannel import QWebChannel
-from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWidgets import QApplication, QMainWindow
+try:
+    import ctypes.wintypes as ctypes_wintypes
+except ImportError:  # pragma: no cover - non-Windows runtime
+    ctypes_wintypes = None
+
+try:
+    import win32con
+    import win32gui
+    import win32print
+except ImportError:  # pragma: no cover - non-Windows runtime
+    win32con = None
+    win32gui = None
+    win32print = None
+
+try:
+    from PIL import Image, UnidentifiedImageError
+except ImportError:  # pragma: no cover - optional dependency for tests
+    Image = None
+    UnidentifiedImageError = ValueError
+
+try:
+    from PyQt6.QtCore import QObject, QRunnable, QThreadPool, QUrl, pyqtSignal, pyqtSlot
+    from PyQt6.QtWebChannel import QWebChannel
+    from PyQt6.QtWebEngineWidgets import QWebEngineView
+    from PyQt6.QtWidgets import QApplication, QMainWindow
+except ImportError:  # pragma: no cover - optional UI dependency for tests
+    class QObject:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class QRunnable(QObject):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+
+    class QThreadPool(QObject):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+
+        def setMaxThreadCount(self, *args, **kwargs):
+            return None
+
+        def start(self, *args, **kwargs):
+            return None
+
+    class QUrl:
+        @staticmethod
+        def fromLocalFile(path):
+            return path
+
+    class _NoSignal:
+        def __call__(self, *args, **kwargs):
+            return None
+
+    def pyqtSignal(*args, **kwargs):
+        return _NoSignal()
+
+    def pyqtSlot(*args, **kwargs):
+        def decorator(func):
+            return func
+
+        return decorator
+
+    class QWebChannel(QObject):
+        def registerObject(self, *args, **kwargs):
+            return None
+
+    class QWebEngineView(QObject):
+        def page(self):
+            return self
+
+        def setWebChannel(self, *args, **kwargs):
+            return None
+
+        def load(self, *args, **kwargs):
+            return None
+
+    class QApplication(QObject):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+
+        def exec(self):
+            return 0
+
+    class QMainWindow(QObject):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+
+        def setWindowTitle(self, *args, **kwargs):
+            return None
+
+        def resize(self, *args, **kwargs):
+            return None
+
+        def setMinimumSize(self, *args, **kwargs):
+            return None
+
+        def setCentralWidget(self, *args, **kwargs):
+            return None
+
+        def show(self):
+            return None
+
+        def setCentralWidget(self, *args, **kwargs):
+            return None
+
+    class _NoQApp:
+        pass
+
+    QApplication = QApplication
+    QMainWindow = QMainWindow
+    QWebChannel = QWebChannel
+    QWebEngineView = QWebEngineView
+    QObject = QObject
+    QRunnable = QRunnable
+    QThreadPool = QThreadPool
+    QUrl = QUrl
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+
+def _require_windows_printer_runtime():
+    missing = []
+    if ctypes_wintypes is None:
+        missing.append("ctypes.wintypes")
+    if win32con is None:
+        missing.append("win32con")
+    if win32gui is None:
+        missing.append("win32gui")
+    if win32print is None:
+        missing.append("win32print")
+    if Image is None:
+        missing.append("Pillow")
+    if missing:
+        raise RuntimeError(
+            "Эта функция доступна только в Windows-среде с установленными зависимостями: "
+            + ", ".join(missing)
+        )
 
 
 def get_resource_path(relative_path):
@@ -25,9 +151,7 @@ def get_resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 
-def configure_devmode(
-    devmode, width_mm, height_mm, quality, paper_type, paper_size_id=None
-):
+def configure_paper_size(devmode, width_mm, height_mm, paper_size_id=None):
     portrait_width = min(width_mm, height_mm)
     portrait_height = max(width_mm, height_mm)
     paper_fields = win32con.DM_PAPERSIZE | win32con.DM_ORIENTATION
@@ -51,6 +175,11 @@ def configure_devmode(
         else win32con.DMORIENT_PORTRAIT
     )
 
+
+def configure_devmode(
+    devmode, width_mm, height_mm, quality, paper_type, paper_size_id=None
+):
+    configure_paper_size(devmode, width_mm, height_mm, paper_size_id)
     devmode.Fields |= win32con.DM_PRINTQUALITY
     devmode.PrintQuality = {
         "high": win32con.DMRES_HIGH,
@@ -104,11 +233,44 @@ def find_supported_paper(printer_name, port_name, width_mm, height_mm):
     return nearest[2:]
 
 
+def open_printer_settings(printer_name, owner_window):
+    _require_windows_printer_runtime()
+    if not isinstance(printer_name, str) or not printer_name.strip():
+        raise ValueError("Выберите установленный принтер Windows.")
+
+    printer_handle = win32print.OpenPrinter(printer_name)
+    try:
+        printer_info = win32print.GetPrinter(printer_handle, 2)
+        input_devmode = printer_info.get("pDevMode")
+        output_devmode = win32print.GetPrinter(printer_handle, 2).get("pDevMode")
+        if input_devmode is None or output_devmode is None:
+            raise RuntimeError("Драйвер принтера не предоставил параметры DEVMODE.")
+
+        result = win32print.DocumentProperties(
+            owner_window,
+            printer_handle,
+            printer_name,
+            output_devmode,
+            input_devmode,
+            win32con.DM_IN_BUFFER | win32con.DM_OUT_BUFFER | win32con.DM_IN_PROMPT,
+        )
+        if result == win32con.IDCANCEL:
+            return None
+        if result != win32con.IDOK:
+            raise RuntimeError(
+                f"Драйвер принтера не подтвердил настройки (код {result})."
+            )
+        return output_devmode
+    finally:
+        win32print.ClosePrinter(printer_handle)
+
+
 class PrintSignals(QObject):
     finished = pyqtSignal(str)
 
 
-def print_image(payload):
+def print_image(payload, selected_devmode=None):
+    _require_windows_printer_runtime()
     printer_name = payload.get("printer")
     if not isinstance(printer_name, str) or not printer_name.strip():
         raise ValueError("Выберите установленный принтер Windows.")
@@ -135,13 +297,14 @@ def print_image(payload):
     try:
         printer_handle = win32print.OpenPrinter(printer_name)
         printer_info = win32print.GetPrinter(printer_handle, 2)
-        devmode = printer_info.get("pDevMode")
+        devmode = selected_devmode or printer_info.get("pDevMode")
         if devmode is None:
             raise RuntimeError("Драйвер принтера не предоставил параметры DEVMODE.")
 
         quality = payload.get("quality", "high")
         paper_type = payload.get("paper_type", "glossy")
-        configure_devmode(devmode, width_mm, height_mm, quality, paper_type)
+        if selected_devmode is None:
+            configure_devmode(devmode, width_mm, height_mm, quality, paper_type)
 
         device_context = win32gui.CreateDC("WINSPOOL", printer_name, None)
         reset_context = win32gui.ResetDC(device_context, devmode)
@@ -151,7 +314,7 @@ def print_image(payload):
 
         gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
         get_device_caps = gdi32.GetDeviceCaps
-        get_device_caps.argtypes = [ctypes.wintypes.HDC, ctypes.c_int]
+        get_device_caps.argtypes = [ctypes_wintypes.HDC, ctypes.c_int]
         get_device_caps.restype = ctypes.c_int
         dpi_x = get_device_caps(device_context, win32con.LOGPIXELSX)
         dpi_y = get_device_caps(device_context, win32con.LOGPIXELSY)
@@ -168,7 +331,17 @@ def print_image(payload):
             abs(actual_page_size[0] - requested_page_size[0]) / requested_page_size[0],
             abs(actual_page_size[1] - requested_page_size[1]) / requested_page_size[1],
         )
-        if page_size_error > 0.03:
+        orientation_mismatch = (width_mm > height_mm) != (
+            page_width_mm > page_height_mm
+        )
+        if page_size_error > 0.03 or orientation_mismatch:
+            if selected_devmode is not None:
+                raise RuntimeError(
+                    "Формат бумаги в настройках драйвера не совпадает с форматом "
+                    f"приложения ({page_width_mm:.1f} × {page_height_mm:.1f} мм против "
+                    f"{width_mm:g} × {height_mm:g} мм). Проверьте одинаковые формат "
+                    "и ориентацию в приложении и в настройках драйвера."
+                )
             paper_form = find_supported_paper(
                 printer_name,
                 printer_info.get("pPortName"),
@@ -182,9 +355,13 @@ def print_image(payload):
                     "фотоформат. Задание отменено, чтобы не печатать на A4."
                 )
             paper_size_id, form_width_mm, form_height_mm, form_name = paper_form
-            fallback_devmode = win32print.GetPrinter(printer_handle, 2).get("pDevMode")
+            fallback_devmode = win32print.GetPrinter(printer_handle, 2).get(
+                "pDevMode"
+            )
             if fallback_devmode is None:
-                raise RuntimeError("Не удалось получить DEVMODE для выбранного формата бумаги.")
+                raise RuntimeError(
+                    "Не удалось получить DEVMODE для выбранного формата бумаги."
+                )
             configure_devmode(
                 fallback_devmode,
                 width_mm,
@@ -220,55 +397,55 @@ def print_image(payload):
 
         class DocInfo(ctypes.Structure):
             _fields_ = [
-                ("cbSize", ctypes.wintypes.LONG),
-                ("lpszDocName", ctypes.wintypes.LPCWSTR),
-                ("lpszOutput", ctypes.wintypes.LPCWSTR),
-                ("lpszDatatype", ctypes.wintypes.LPCWSTR),
-                ("fwType", ctypes.wintypes.DWORD),
+                ("cbSize", ctypes_wintypes.LONG),
+                ("lpszDocName", ctypes_wintypes.LPCWSTR),
+                ("lpszOutput", ctypes_wintypes.LPCWSTR),
+                ("lpszDatatype", ctypes_wintypes.LPCWSTR),
+                ("fwType", ctypes_wintypes.DWORD),
             ]
 
         class BitmapInfoHeader(ctypes.Structure):
             _fields_ = [
-                ("biSize", ctypes.wintypes.DWORD),
-                ("biWidth", ctypes.wintypes.LONG),
-                ("biHeight", ctypes.wintypes.LONG),
-                ("biPlanes", ctypes.wintypes.WORD),
-                ("biBitCount", ctypes.wintypes.WORD),
-                ("biCompression", ctypes.wintypes.DWORD),
-                ("biSizeImage", ctypes.wintypes.DWORD),
-                ("biXPelsPerMeter", ctypes.wintypes.LONG),
-                ("biYPelsPerMeter", ctypes.wintypes.LONG),
-                ("biClrUsed", ctypes.wintypes.DWORD),
-                ("biClrImportant", ctypes.wintypes.DWORD),
+                ("biSize", ctypes_wintypes.DWORD),
+                ("biWidth", ctypes_wintypes.LONG),
+                ("biHeight", ctypes_wintypes.LONG),
+                ("biPlanes", ctypes_wintypes.WORD),
+                ("biBitCount", ctypes_wintypes.WORD),
+                ("biCompression", ctypes_wintypes.DWORD),
+                ("biSizeImage", ctypes_wintypes.DWORD),
+                ("biXPelsPerMeter", ctypes_wintypes.LONG),
+                ("biYPelsPerMeter", ctypes_wintypes.LONG),
+                ("biClrUsed", ctypes_wintypes.DWORD),
+                ("biClrImportant", ctypes_wintypes.DWORD),
             ]
 
         class BitmapInfo(ctypes.Structure):
             _fields_ = [
                 ("bmiHeader", BitmapInfoHeader),
-                ("bmiColors", ctypes.wintypes.DWORD * 3),
+                ("bmiColors", ctypes_wintypes.DWORD * 3),
             ]
 
         start_doc = gdi32.StartDocW
-        start_doc.argtypes = [ctypes.wintypes.HDC, ctypes.POINTER(DocInfo)]
-        start_doc.restype = ctypes.wintypes.INT
+        start_doc.argtypes = [ctypes_wintypes.HDC, ctypes.POINTER(DocInfo)]
+        start_doc.restype = ctypes_wintypes.INT
         start_page = gdi32.StartPage
-        start_page.argtypes = [ctypes.wintypes.HDC]
-        start_page.restype = ctypes.wintypes.INT
+        start_page.argtypes = [ctypes_wintypes.HDC]
+        start_page.restype = ctypes_wintypes.INT
         end_page = gdi32.EndPage
-        end_page.argtypes = [ctypes.wintypes.HDC]
-        end_page.restype = ctypes.wintypes.INT
+        end_page.argtypes = [ctypes_wintypes.HDC]
+        end_page.restype = ctypes_wintypes.INT
         end_doc = gdi32.EndDoc
-        end_doc.argtypes = [ctypes.wintypes.HDC]
-        end_doc.restype = ctypes.wintypes.INT
+        end_doc.argtypes = [ctypes_wintypes.HDC]
+        end_doc.restype = ctypes_wintypes.INT
         abort_doc = gdi32.AbortDoc
-        abort_doc.argtypes = [ctypes.wintypes.HDC]
-        abort_doc.restype = ctypes.wintypes.INT
+        abort_doc.argtypes = [ctypes_wintypes.HDC]
+        abort_doc.restype = ctypes_wintypes.INT
         stretch_dibits = gdi32.StretchDIBits
         stretch_dibits.argtypes = [
-            ctypes.wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            ctypes_wintypes.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int,
             ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
-            ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.wintypes.UINT,
-            ctypes.wintypes.DWORD,
+            ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes_wintypes.UINT,
+            ctypes_wintypes.DWORD,
         ]
         stretch_dibits.restype = ctypes.c_int
 
@@ -349,18 +526,20 @@ def print_image(payload):
 
 
 class PrintTask(QRunnable):
-    def __init__(self, payload):
+    def __init__(self, payload, selected_devmode=None):
         super().__init__()
         self.payload = payload
+        self.selected_devmode = selected_devmode
         self.signals = PrintSignals()
 
     def run(self):
         request_id = self.payload.get("request_id")
         try:
-            print_details = print_image(self.payload)
+            print_details = print_image(self.payload, self.selected_devmode)
             result = {
                 "status": "success",
                 "request_id": request_id,
+                "driver_settings_applied": self.selected_devmode is not None,
                 **print_details,
             }
         except Exception as error:
@@ -381,6 +560,26 @@ class PrintBridge(QObject):
         self.thread_pool = QThreadPool(self)
         self.thread_pool.setMaxThreadCount(1)
         self._tasks = {}
+        self._printer_devmodes = {}
+
+    @pyqtSlot(str, result=str)
+    def configure_printer(self, printer_name):
+        try:
+            owner_window = win32gui.GetForegroundWindow()
+            devmode = open_printer_settings(printer_name, owner_window)
+            if devmode is None:
+                return json.dumps({"status": "cancelled"}, ensure_ascii=False)
+            self._printer_devmodes[printer_name] = devmode
+            return json.dumps(
+                {"status": "configured", "printer": printer_name},
+                ensure_ascii=False,
+            )
+        except Exception as error:
+            logging.exception("Не удалось открыть настройки драйвера принтера")
+            return json.dumps(
+                {"status": "error", "message": str(error)},
+                ensure_ascii=False,
+            )
 
     @pyqtSlot(result=str)
     def get_printers(self):
@@ -412,7 +611,10 @@ class PrintBridge(QObject):
                 raise ValueError("Некорректный формат задания печати.")
             if not payload.get("request_id"):
                 raise ValueError("В задании отсутствует идентификатор запроса.")
-            task = PrintTask(payload)
+            task = PrintTask(
+                payload,
+                self._printer_devmodes.get(payload.get("printer")),
+            )
             request_id = payload["request_id"]
             self._tasks[request_id] = task
             task.signals.finished.connect(self._on_print_finished)
@@ -457,6 +659,8 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
+    if win32con is None or win32gui is None or win32print is None:
+        raise RuntimeError("STASH Print Studio требует Windows и зависимости pywin32.")
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
