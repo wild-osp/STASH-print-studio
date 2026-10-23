@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import os
+import struct
 import sys
 
 try:
@@ -19,6 +20,12 @@ except ImportError:  # pragma: no cover - non-Windows runtime
     win32con = None
     win32gui = None
     win32print = None
+
+from epson_print_ticket import (
+    create_devmode as create_epson_devmode,
+    get_media_type_options as get_epson_media_type_options,
+    get_quality_options as get_epson_quality_options,
+)
 
 try:
     from PIL import Image, UnidentifiedImageError
@@ -151,6 +158,12 @@ def get_resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 
+def is_epson_printer(printer_name):
+    return isinstance(printer_name, str) and printer_name.casefold().startswith(
+        "epson "
+    )
+
+
 def configure_paper_size(devmode, width_mm, height_mm, paper_size_id=None):
     portrait_width = min(width_mm, height_mm)
     portrait_height = max(width_mm, height_mm)
@@ -187,12 +200,15 @@ def configure_devmode(
     port_name=None,
 ):
     configure_paper_size(devmode, width_mm, height_mm, paper_size_id)
-    devmode.Fields |= win32con.DM_PRINTQUALITY
-    devmode.PrintQuality = {
-        "high": win32con.DMRES_HIGH,
-        "standard": win32con.DMRES_MEDIUM,
-        "draft": win32con.DMRES_DRAFT,
-    }.get(quality, win32con.DMRES_HIGH)
+    if quality is not None:
+        if quality not in ("high", "standard", "draft"):
+            raise ValueError("Выбрано неизвестное качество печати.")
+        devmode.Fields |= win32con.DM_PRINTQUALITY
+        devmode.PrintQuality = {
+            "high": win32con.DMRES_HIGH,
+            "standard": win32con.DMRES_MEDIUM,
+            "draft": win32con.DMRES_DRAFT,
+        }[quality]
 
     if hasattr(devmode, "MediaType"):
         devmode.Fields |= win32con.DM_MEDIATYPE
@@ -285,6 +301,35 @@ def get_driver_media_types(printer_name, port_name):
     ]
 
 
+def add_print_ticket_media_options(printer_name, media_types):
+    ticket_options = get_epson_media_type_options(printer_name)
+    options_by_name = {}
+    for option in ticket_options:
+        key = " ".join(option["name"].casefold().split())
+        options_by_name.setdefault(key, []).append(option["id"])
+
+    for media in media_types:
+        key = " ".join(media["name"].casefold().split())
+        matches = options_by_name.get(key, [])
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"Не удалось однозначно сопоставить тип бумаги "
+                f"«{media['name']}» с настройками Epson."
+            )
+        media["ticket_option"] = matches[0]
+    return media_types
+
+
+def is_photo_media_name(media_name):
+    normalized_name = " ".join(media_name.casefold().split())
+    if any(term in normalized_name for term in ("cd/dvd", "envelope", "конверт")):
+        return False
+    return any(
+        term in normalized_name
+        for term in ("photo", "glossy", "matte", "semigloss", "фото", "глянц", "матов")
+    )
+
+
 def resolve_driver_media_type(printer_name, port_name, paper_type):
     media_types = get_driver_media_types(printer_name, port_name)
     if isinstance(paper_type, str) and paper_type.startswith("driver:"):
@@ -312,6 +357,79 @@ def resolve_driver_media_type(printer_name, port_name, paper_type):
     return None
 
 
+def find_driver_paper_form(printer_name, port_name, width_mm, height_mm):
+    format_names = {
+        (100, 150): ("10x15", "4x6"),
+        (130, 180): ("13x18", "5x7"),
+        (150, 200): ("15x20",),
+    }
+    target_format = tuple(sorted((round(width_mm), round(height_mm))))
+    return find_supported_paper(
+        printer_name,
+        port_name,
+        width_mm,
+        height_mm,
+        preferred_name_parts=format_names.get(target_format, ()),
+    )
+
+
+def configure_raw_devmode(
+    devmode_pointer,
+    devmode_size,
+    width_mm,
+    height_mm,
+    paper_size_id,
+    media_type,
+):
+    if devmode_size < 220:
+        raise RuntimeError("Драйвер Epson вернул неполный DEVMODE.")
+    if not (0 < width_mm <= 2000 and 0 < height_mm <= 2000):
+        raise ValueError("Размеры бумаги должны быть больше 0 и не превышать 2000 мм.")
+    if media_type is None:
+        raise ValueError("Драйвер не сообщил выбранный тип бумаги Epson.")
+
+    raw_devmode = (ctypes.c_ubyte * devmode_size).from_address(
+        devmode_pointer.value
+    )
+    portrait_width = min(width_mm, height_mm)
+    portrait_height = max(width_mm, height_mm)
+    fields = struct.unpack_from("<I", raw_devmode, 72)[0]
+    fields |= win32con.DM_PAPERSIZE | win32con.DM_ORIENTATION
+
+    if paper_size_id is None:
+        fields |= win32con.DM_PAPERWIDTH | win32con.DM_PAPERLENGTH
+        paper_size_id = {
+            (148, 210): win32con.DMPAPER_A5,
+            (210, 297): win32con.DMPAPER_A4,
+            (297, 420): win32con.DMPAPER_A3,
+        }.get((round(portrait_width), round(portrait_height)), win32con.DMPAPER_USER)
+        struct.pack_into("<h", raw_devmode, 80, round(portrait_height * 10))
+        struct.pack_into("<h", raw_devmode, 82, round(portrait_width * 10))
+    else:
+        fields &= ~(win32con.DM_PAPERWIDTH | win32con.DM_PAPERLENGTH)
+
+    fields |= win32con.DM_MEDIATYPE
+    struct.pack_into("<I", raw_devmode, 72, fields)
+    struct.pack_into("<h", raw_devmode, 76, (
+        win32con.DMORIENT_LANDSCAPE
+        if width_mm > height_mm
+        else win32con.DMORIENT_PORTRAIT
+    ))
+    struct.pack_into("<h", raw_devmode, 78, paper_size_id)
+    struct.pack_into("<I", raw_devmode, 196, media_type)
+
+
+def reset_device_context_with_devmode(device_context, devmode_buffer):
+    gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+    reset_dc = gdi32.ResetDCW
+    reset_dc.argtypes = [ctypes_wintypes.HDC, ctypes.c_void_p]
+    reset_dc.restype = ctypes_wintypes.HDC
+    reset_context = reset_dc(device_context, devmode_buffer.pointer)
+    if not reset_context:
+        raise RuntimeError("Драйвер Epson не применил выбранные параметры PrintTicket.")
+    return reset_context
+
+
 def prepare_driver_devmode(printer_name, port_name, devmode, options):
     width_mm = float(options.get("width_mm", 0))
     height_mm = float(options.get("height_mm", 0))
@@ -319,7 +437,7 @@ def prepare_driver_devmode(printer_name, port_name, devmode, options):
         raise ValueError("Размеры бумаги должны быть больше 0 и не превышать 2000 мм.")
 
     quality = options.get("quality", "high")
-    if quality not in ("high", "standard", "draft"):
+    if quality is not None and quality not in ("high", "standard", "draft"):
         raise ValueError("Выбрано неизвестное качество печати.")
     paper_type = options.get("paper_type", "glossy")
     if not isinstance(paper_type, str) or not (
@@ -328,18 +446,11 @@ def prepare_driver_devmode(printer_name, port_name, devmode, options):
     ):
         raise ValueError("Выбран неизвестный тип бумаги.")
 
-    format_names = {
-        (100, 150): ("10x15", "4x6"),
-        (130, 180): ("13x18", "5x7"),
-        (150, 200): ("15x20",),
-    }
-    target_format = tuple(sorted((round(width_mm), round(height_mm))))
-    paper_form = find_supported_paper(
+    paper_form = find_driver_paper_form(
         printer_name,
         port_name,
         width_mm,
         height_mm,
-        preferred_name_parts=format_names.get(target_format, ()),
     )
     if paper_form is None:
         configure_paper_size(devmode, width_mm, height_mm)
@@ -348,16 +459,33 @@ def prepare_driver_devmode(printer_name, port_name, devmode, options):
             devmode, width_mm, height_mm, paper_size_id=paper_form[0]
         )
 
-    devmode.Fields |= win32con.DM_PRINTQUALITY
-    devmode.PrintQuality = {
-        "high": win32con.DMRES_HIGH,
-        "standard": win32con.DMRES_MEDIUM,
-        "draft": win32con.DMRES_DRAFT,
-    }[quality]
+    if quality is not None:
+        devmode.Fields |= win32con.DM_PRINTQUALITY
+        devmode.PrintQuality = {
+            "high": win32con.DMRES_HIGH,
+            "standard": win32con.DMRES_MEDIUM,
+            "draft": win32con.DMRES_DRAFT,
+        }[quality]
     if hasattr(devmode, "MediaType"):
         media_type = resolve_driver_media_type(
             printer_name, port_name, paper_type
         )
+        if options.get("borderless") is True:
+            selected_media = next(
+                (
+                    item
+                    for item in get_driver_media_types(printer_name, port_name)
+                    if item["id"] == media_type
+                ),
+                None,
+            )
+            if selected_media is None or not is_photo_media_name(
+                selected_media["name"]
+            ):
+                raise ValueError(
+                    "Печать без полей доступна только для фотобумаги. "
+                    "Выберите фотобумагу или включите поля."
+                )
         devmode.Fields |= win32con.DM_MEDIATYPE
         if media_type is None:
             if isinstance(paper_type, str) and paper_type.startswith("driver:"):
@@ -440,29 +568,84 @@ def print_image(payload, selected_devmode=None):
 
     printer_handle = None
     device_context = None
+    epson_devmode = None
     document_started = False
     try:
         printer_handle = win32print.OpenPrinter(printer_name)
         printer_info = win32print.GetPrinter(printer_handle, 2)
-        devmode = selected_devmode or printer_info.get("pDevMode")
-        if devmode is None:
-            raise RuntimeError("Драйвер принтера не предоставил параметры DEVMODE.")
-
-        quality = payload.get("quality", "high")
         paper_type = payload.get("paper_type", "glossy")
-        if selected_devmode is None:
+        is_epson = is_epson_printer(printer_name) or is_epson_printer(
+            printer_info.get("pDriverName")
+        )
+        if is_epson:
+            media_type_option = payload.get("paper_type_option")
+            borderless = payload.get("borderless") is True
+            media_type = resolve_driver_media_type(
+                printer_name,
+                printer_info.get("pPortName"),
+                paper_type,
+            )
+            if borderless:
+                selected_media = next(
+                    (
+                        item
+                        for item in get_driver_media_types(
+                            printer_name, printer_info.get("pPortName")
+                        )
+                        if item["id"] == media_type
+                    ),
+                    None,
+                )
+                if selected_media is None or not is_photo_media_name(
+                    selected_media["name"]
+                ):
+                    raise ValueError(
+                        "Печать без полей доступна только для фотобумаги. "
+                        "Выберите фотобумагу или включите поля."
+                    )
+            epson_devmode = create_epson_devmode(
+                printer_name,
+                media_type_option,
+                payload.get("quality"),
+                borderless,
+            )
+            paper_form = find_driver_paper_form(
+                printer_name,
+                printer_info.get("pPortName"),
+                width_mm,
+                height_mm,
+            )
+            configure_raw_devmode(
+                epson_devmode.pointer,
+                epson_devmode.size,
+                width_mm,
+                height_mm,
+                paper_form[0] if paper_form else None,
+                media_type,
+            )
+            devmode = None
+        else:
+            devmode = selected_devmode or printer_info.get("pDevMode")
+            if devmode is None:
+                raise RuntimeError(
+                    "Драйвер принтера не предоставил параметры DEVMODE."
+                )
             configure_devmode(
                 devmode,
                 width_mm,
                 height_mm,
-                quality,
+                payload.get("quality", "high"),
                 paper_type,
                 printer_name=printer_name,
                 port_name=printer_info.get("pPortName"),
             )
 
         device_context = win32gui.CreateDC("WINSPOOL", printer_name, None)
-        reset_context = win32gui.ResetDC(device_context, devmode)
+        reset_context = (
+            reset_device_context_with_devmode(device_context, epson_devmode)
+            if is_epson
+            else win32gui.ResetDC(device_context, devmode)
+        )
         if not reset_context:
             raise RuntimeError("Драйвер принтера не применил параметры DEVMODE.")
         device_context = reset_context
@@ -497,7 +680,7 @@ def print_image(payload, selected_devmode=None):
                     f"{width_mm:g} × {height_mm:g} мм). Проверьте одинаковые формат "
                     "и ориентацию в приложении и в настройках драйвера."
                 )
-            paper_form = find_supported_paper(
+            paper_form = find_driver_paper_form(
                 printer_name,
                 printer_info.get("pPortName"),
                 width_mm,
@@ -510,24 +693,41 @@ def print_image(payload, selected_devmode=None):
                     "фотоформат. Задание отменено, чтобы не печатать на A4."
                 )
             paper_size_id, form_width_mm, form_height_mm, form_name = paper_form
-            fallback_devmode = win32print.GetPrinter(printer_handle, 2).get(
-                "pDevMode"
-            )
-            if fallback_devmode is None:
-                raise RuntimeError(
-                    "Не удалось получить DEVMODE для выбранного формата бумаги."
+            if is_epson:
+                configure_raw_devmode(
+                    epson_devmode.pointer,
+                    epson_devmode.size,
+                    width_mm,
+                    height_mm,
+                    paper_size_id,
+                    media_type,
                 )
-            configure_devmode(
-                fallback_devmode,
-                width_mm,
-                height_mm,
-                quality,
-                paper_type,
-                paper_size_id=paper_size_id,
-                printer_name=printer_name,
-                port_name=printer_info.get("pPortName"),
-            )
-            reset_context = win32gui.ResetDC(device_context, fallback_devmode)
+                reset_context = reset_device_context_with_devmode(
+                    device_context,
+                    epson_devmode,
+                )
+            else:
+                fallback_devmode = win32print.GetPrinter(
+                    printer_handle, 2
+                ).get("pDevMode")
+                if fallback_devmode is None:
+                    raise RuntimeError(
+                        "Не удалось получить DEVMODE для выбранного формата бумаги."
+                    )
+                configure_devmode(
+                    fallback_devmode,
+                    width_mm,
+                    height_mm,
+                    payload.get("quality", "high"),
+                    paper_type,
+                    paper_size_id=paper_size_id,
+                    printer_name=printer_name,
+                    port_name=printer_info.get("pPortName"),
+                )
+                reset_context = win32gui.ResetDC(
+                    device_context,
+                    fallback_devmode,
+                )
             if not reset_context:
                 raise RuntimeError(
                     f"Не удалось выбрать поддерживаемый формат бумаги «{form_name}»."
@@ -678,6 +878,8 @@ def print_image(payload, selected_devmode=None):
             gdi32.AbortDoc(device_context)
         if device_context:
             win32gui.DeleteDC(device_context)
+        if epson_devmode:
+            epson_devmode.close()
         if printer_handle:
             win32print.ClosePrinter(printer_handle)
 
@@ -696,7 +898,10 @@ class PrintTask(QRunnable):
             result = {
                 "status": "success",
                 "request_id": request_id,
-                "driver_settings_applied": self.selected_devmode is not None,
+                "driver_settings_applied": (
+                    self.selected_devmode is not None
+                    or is_epson_printer(self.payload.get("printer"))
+                ),
                 **print_details,
             }
         except Exception as error:
@@ -760,6 +965,13 @@ class PrintBridge(QObject):
                 raise RuntimeError(
                     "Драйвер принтера не сообщил поддерживаемые типы бумаги."
                 )
+            if is_epson_printer(
+                printer_info.get("pDriverName")
+            ) or is_epson_printer(printer_name):
+                media_types = add_print_ticket_media_options(
+                    printer_name,
+                    media_types,
+                )
             return json.dumps(
                 {"media_types": media_types}, ensure_ascii=False
             )
@@ -772,6 +984,36 @@ class PrintBridge(QObject):
         finally:
             if printer_handle:
                 win32print.ClosePrinter(printer_handle)
+
+    @pyqtSlot(str, str, bool, result=str)
+    def get_epson_quality_modes(
+        self,
+        printer_name,
+        media_type_option,
+        borderless,
+    ):
+        try:
+            if not is_epson_printer(printer_name):
+                raise ValueError("Выбранный принтер не является Epson.")
+            quality_modes = get_epson_quality_options(
+                printer_name,
+                media_type_option,
+                borderless,
+            )
+            if not quality_modes:
+                raise RuntimeError(
+                    "Драйвер Epson не сообщил доступные режимы качества."
+                )
+            return json.dumps(
+                {"quality_modes": quality_modes},
+                ensure_ascii=False,
+            )
+        except Exception as error:
+            logging.exception("Не удалось получить режимы качества Epson")
+            return json.dumps(
+                {"error": str(error), "quality_modes": []},
+                ensure_ascii=False,
+            )
 
     @pyqtSlot(result=str)
     def get_printers(self):
@@ -803,9 +1045,15 @@ class PrintBridge(QObject):
                 raise ValueError("Некорректный формат задания печати.")
             if not payload.get("request_id"):
                 raise ValueError("В задании отсутствует идентификатор запроса.")
+            printer_name = payload.get("printer")
+            selected_devmode = (
+                None
+                if is_epson_printer(printer_name)
+                else self._printer_devmodes.get(printer_name)
+            )
             task = PrintTask(
                 payload,
-                self._printer_devmodes.get(payload.get("printer")),
+                selected_devmode,
             )
             request_id = payload["request_id"]
             self._tasks[request_id] = task

@@ -212,14 +212,6 @@
       </div>
     </div>
 
-    <div class="control-group photo-group">
-      <label>Поля листа</label>
-      <select id="border-select">
-        <option value="false">Без полей (В край листа)</option>
-        <option value="true">С полями (Белая рамка 4 мм)</option>
-      </select>
-    </div>
-
     <!-- Масштабирование (Зум) слайдером -->
     <div class="control-group">
       <label>Масштаб кадра: <span class="val-badge" id="zoom-val">100%</span></label>
@@ -257,7 +249,7 @@
       Проверить настройки в драйвере...
     </button>
     <div id="driver-settings-status" style="font-size: 11px; color: #8e8ea6;">
-      Выберите принтер, чтобы загрузить доступные типы бумаги. Качество и «Без полей» проверьте и задайте в окне Epson.
+      Выберите принтер, чтобы загрузить доступные типы бумаги и режимы Epson.
     </div>
 
     <div class="control-group">
@@ -270,11 +262,19 @@
     </div>
 
     <div class="control-group">
-      <label>Качество печати (проверьте в Epson)</label>
+      <label>Качество печати</label>
       <select id="print-quality">
-        <option value="high">Наилучшее качество (High / Photo)</option>
-        <option value="standard">Стандартное (Standard)</option>
-        <option value="draft">Черновое (Draft / Быстро)</option>
+        <option value="high">Наилучшее качество</option>
+        <option value="standard">Стандартное</option>
+        <option value="draft">Черновое</option>
+      </select>
+    </div>
+
+    <div class="control-group photo-group">
+      <label>Поля листа (без полей — для фотобумаги)</label>
+      <select id="border-select">
+        <option value="false">Без полей (В край листа)</option>
+        <option value="true">С полями (Белая рамка 4 мм)</option>
       </select>
     </div>
 
@@ -699,6 +699,7 @@
       const s = item.state;
       document.getElementById('format-select').value = `${s.sheetWidthMm}x${s.sheetHeightMm}`;
       document.getElementById('border-select').value = s.hasBorder ? 'true' : 'false';
+      updateBorderlessAvailability();
       document.getElementById('brightness-range').value = s.brightness;
       document.getElementById('contrast-range').value = s.contrast;
       document.getElementById('brightness-val').textContent = s.brightness + '%';
@@ -825,13 +826,45 @@
       calculateBaseFit(queue[activeIndex]);
       syncUIWithItemState(queue[activeIndex]);
       render();
+      refreshEpsonQualityModes();
     };
 
     document.getElementById('border-select').onchange = (e) => {
       if (activeIndex === -1) return;
       queue[activeIndex].state.hasBorder = (e.target.value === 'true');
       render();
+      refreshEpsonQualityModes();
     };
+
+    function selectedPaperSupportsBorderless() {
+      const paperSelect = document.getElementById('paper-type');
+      const selectedOption = paperSelect.selectedOptions[0];
+      if (!selectedOption) return false;
+      const name = selectedOption.text.toLowerCase();
+      return !/(cd\/dvd|envelope|конверт)/.test(name)
+        && /(photo|glossy|matte|semigloss|фото|глянц|матов)/.test(name);
+    }
+
+    function updateBorderlessAvailability() {
+      const borderSelect = document.getElementById('border-select');
+      const borderlessOption = borderSelect.options[0];
+      const supported = selectedPaperSupportsBorderless();
+      borderlessOption.disabled = !supported;
+      let marginsForced = false;
+      if (!supported) {
+        queue.forEach((item) => {
+          if (item.state.mode === 'photo' && !item.state.hasBorder) {
+            item.state.hasBorder = true;
+            marginsForced = true;
+          }
+        });
+        borderSelect.value = 'true';
+      } else if (activeIndex >= 0 && currentMode === 'photo') {
+        borderSelect.value = queue[activeIndex].state.hasBorder ? 'true' : 'false';
+      }
+      if (marginsForced && activeIndex >= 0) render();
+      refreshEpsonQualityModes();
+    }
 
     document.getElementById('btn-portrait').onclick = () => {
       if (activeIndex === -1) return;
@@ -960,7 +993,9 @@
           width_mm: wMm,
           height_mm: hMm,
           paper_type: document.getElementById('paper-type').value,
-          quality: document.getElementById('print-quality').value,
+          paper_type_option: getSelectedPaperTicketOption(),
+          quality: getDriverQualityValue(),
+          borderless: !s.hasBorder,
           image_base64: outCanvas.toDataURL('image/jpeg', 0.98)
         };
       } else {
@@ -1031,7 +1066,9 @@
           width_mm: sheetWMm,
           height_mm: sheetHMm,
           paper_type: document.getElementById('paper-type').value,
-          quality: document.getElementById('print-quality').value,
+          paper_type_option: getSelectedPaperTicketOption(),
+          quality: getDriverQualityValue(),
+          borderless: false,
           image_base64: outCanvas.toDataURL('image/jpeg', 0.98)
         };
       }
@@ -1065,22 +1102,115 @@
 
     function updateDriverSettingsStatus() {
       const printerName = document.getElementById('printer-select').value;
-      const settings = configuredPrinters.get(printerName);
-      let status = 'Формат и тип бумаги передаются драйверу. Качество и «Без полей» задайте и проверьте в окне Epson.';
+      const isEpson = printerName.toLowerCase().startsWith('epson ');
+      const settings = isEpson ? null : configuredPrinters.get(printerName);
+      const qualitySelect = document.getElementById('print-quality');
+      let status = isEpson
+        ? 'Качество и физический режим «Без полей» будут переданы в Epson из приложения.'
+        : 'Формат, тип бумаги и качество передаются драйверу. Проверьте принятые значения в его окне.';
       if (settings) {
-        status = 'Настройки из подтверждённого окна драйвера сохранены для следующих заданий. Убедитесь, что Epson принял качество и тип бумаги.';
-        if (settings.borderless === true) {
-          status += ' Проверьте, что «Без полей» включено в драйвере Epson.';
-        } else if (settings.borderless === false) {
-          status += ' Проверьте, что «Без полей» выключено в драйвере Epson.';
-        } else {
-          status += ' Сверьте настройку «Без полей» с выбранным режимом.';
-        }
+        status = 'Настройки из подтверждённого окна драйвера сохранены для следующих заданий. Проверьте качество и тип бумаги.';
       }
       document.getElementById('driver-settings-status').textContent = status;
-      const configured = Boolean(settings);
+      const configured = !isEpson && Boolean(settings);
       document.getElementById('paper-type').disabled = configured;
-      document.getElementById('print-quality').disabled = configured;
+      document.getElementById('btn-printer-settings').style.display = isEpson ? 'none' : '';
+      if (isEpson) {
+        if (qualitySelect.dataset.driverManaged !== 'true') {
+          qualitySelect.dataset.savedQuality = qualitySelect.value;
+          qualitySelect.replaceChildren(
+            new Option('Загрузка режимов Epson...', '')
+          );
+          qualitySelect.dataset.driverManaged = 'true';
+        }
+        qualitySelect.disabled = true;
+      } else {
+        if (qualitySelect.dataset.driverManaged === 'true') {
+          qualitySelect.replaceChildren(
+            new Option('Наилучшее качество', 'high'),
+            new Option('Стандартное', 'standard'),
+            new Option('Черновое', 'draft')
+          );
+          qualitySelect.value = qualitySelect.dataset.savedQuality || 'high';
+          delete qualitySelect.dataset.driverManaged;
+          delete qualitySelect.dataset.savedQuality;
+        }
+        qualitySelect.disabled = configured;
+      }
+    }
+
+    function getCurrentBorderlessSetting() {
+      if (currentMode !== 'photo' || activeIndex < 0) return false;
+      const item = queue[activeIndex];
+      return item ? !item.state.hasBorder : false;
+    }
+
+    let epsonQualityRequest = 0;
+    async function refreshEpsonQualityModes() {
+      const printerName = document.getElementById('printer-select').value;
+      const qualitySelect = document.getElementById('print-quality');
+      const status = document.getElementById('driver-settings-status');
+      const requestId = ++epsonQualityRequest;
+      if (!printerName.toLowerCase().startsWith('epson ')) return;
+
+      const paperOption = document.getElementById('paper-type').selectedOptions[0];
+      const mediaTypeOption = paperOption && paperOption.dataset.ticketOption;
+      if (!mediaTypeOption || !pyBridge) {
+        qualitySelect.replaceChildren(new Option('Режимы недоступны', ''));
+        qualitySelect.disabled = true;
+        if (!pyBridge) {
+          status.textContent = 'Подключение к подсистеме печати не установлено.';
+        } else if (!mediaTypeOption) {
+          status.textContent = 'Драйвер Epson не сообщил соответствие выбранной бумаги PrintTicket.';
+        }
+        return;
+      }
+
+      const previousQuality = qualitySelect.value;
+      qualitySelect.disabled = true;
+      try {
+        const response = JSON.parse(await callBridgeMethod(
+          'get_epson_quality_modes',
+          printerName,
+          mediaTypeOption,
+          getCurrentBorderlessSetting()
+        ));
+        if (requestId !== epsonQualityRequest) return;
+        if (response.error) throw new Error(response.error);
+        if (!Array.isArray(response.quality_modes) || !response.quality_modes.length) {
+          throw new Error('Драйвер не сообщил доступные режимы качества.');
+        }
+
+        qualitySelect.replaceChildren(...response.quality_modes.map((mode) => {
+          const option = new Option(mode.name, mode.id);
+          return option;
+        }));
+        const qualityStillAvailable = response.quality_modes.some(
+          (mode) => mode.id === previousQuality
+        );
+        qualitySelect.value = qualityStillAvailable
+          ? previousQuality
+          : response.quality_modes[response.quality_modes.length - 1].id;
+        qualitySelect.disabled = false;
+        status.textContent = 'Качество и физический режим «Без полей» будут переданы в Epson из приложения.';
+        if (!qualityStillAvailable && previousQuality) {
+          status.textContent = `Выбранный ранее режим недоступен для этой бумаги и полей. Установлено качество «${qualitySelect.selectedOptions[0].text}».`;
+        }
+      } catch (error) {
+        if (requestId !== epsonQualityRequest) return;
+        qualitySelect.replaceChildren(new Option('Режимы недоступны', ''));
+        qualitySelect.disabled = true;
+        status.textContent = `Не удалось получить режимы Epson: ${error.message}`;
+      }
+    }
+
+    function getDriverQualityValue() {
+      return document.getElementById('print-quality').value;
+    }
+
+    function getSelectedPaperTicketOption() {
+      const selected = document.getElementById('paper-type').selectedOptions[0];
+      return selected ? selected.dataset.ticketOption || null : null;
     }
 
     let mediaTypesRequest = 0;
@@ -1110,6 +1240,9 @@
           const option = document.createElement('option');
           option.value = `driver:${media.id}`;
           option.textContent = media.name;
+          if (media.ticket_option) {
+            option.dataset.ticketOption = media.ticket_option;
+          }
           return option;
         }));
 
@@ -1142,9 +1275,11 @@
             .find(Boolean);
           if (preferred) select.value = `driver:${preferred.id}`;
         }
+        updateBorderlessAvailability();
       } catch (error) {
         if (requestId === mediaTypesRequest) {
           select.replaceChildren(new Option('Типы бумаги недоступны', ''));
+          updateBorderlessAvailability();
           alert(`Не удалось получить типы бумаги для «${printerName}»: ${error.message}`);
         }
       } finally {
@@ -1178,7 +1313,7 @@
       return {
         width_mm: widthMm,
         height_mm: heightMm,
-        quality: document.getElementById('print-quality').value,
+        quality: getDriverQualityValue(),
         paper_type: document.getElementById('paper-type').value,
         borderless
       };
@@ -1187,6 +1322,10 @@
     document.getElementById('printer-select').addEventListener('change', () => {
       updateDriverSettingsStatus();
       refreshDriverMediaTypes();
+    });
+    document.getElementById('paper-type').addEventListener('change', () => {
+      updateBorderlessAvailability();
+      render();
     });
     document.getElementById('btn-printer-settings').onclick = async () => {
       const printerName = document.getElementById('printer-select').value;
