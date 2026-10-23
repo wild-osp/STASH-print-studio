@@ -658,7 +658,7 @@ class PrintBridge(QObject):
         self._tasks = {}
         self._printer_devmodes = {}
 
-    @pyqtSlot(str, result=str)
+    @pyqtSlot(str, str, result=str)
     def configure_printer(self, printer_name, options_json):
         try:
             options = json.loads(options_json)
